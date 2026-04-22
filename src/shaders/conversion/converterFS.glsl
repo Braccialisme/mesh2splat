@@ -9,8 +9,6 @@
 uniform sampler2D albedoTexture;
 uniform sampler2D normalTexture;
 uniform sampler2D metallicRoughnessTexture;
-uniform sampler2D occlusionTexture;
-uniform sampler2D emissiveTexture;
 
 uniform int hasAlbedoMap;
 uniform int hasNormalMap;
@@ -79,9 +77,6 @@ void main() {
     else {
         out_Normal = Normal;
     }
-
-    
-
 
     //METALLIC-ROUGHNESS MAP
     vec2 metallicRoughness;

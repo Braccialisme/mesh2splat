@@ -13,15 +13,17 @@ set(IGFD_DIR                ${THIRD_PARTY_DIR}/ImGuiFileDialog)
 set(IMGUIZMO_DIR            ${THIRD_PARTY_DIR}/imguizmo)
 set(XATLAS_DIR              ${THIRD_PARTY_DIR}/xatlas)
 
-include_directories(${GLFW_DIR}/include)
-include_directories(${GLEW_DIR}/include)
-include_directories(${GLM_DIR})
-include_directories(${IMGUI_DIR})
-include_directories(${IGFD_DIR})
-include_directories(${IMGUIZMO_DIR})
-include_directories(${XATLAS_DIR})
 include_directories(${CMAKE_SOURCE_DIR}/src)
-include_directories(${THIRD_PARTY_DIR})
+include_directories(SYSTEM
+    ${GLFW_DIR}/include
+    ${GLEW_DIR}/include
+    ${GLM_DIR}
+    ${IMGUI_DIR}
+    ${IGFD_DIR}
+    ${IMGUIZMO_DIR}
+    ${XATLAS_DIR}
+    ${THIRD_PARTY_DIR}
+)
 
 
 file(GLOB_RECURSE SOURCES 
@@ -58,9 +60,29 @@ file(GLOB XATLAS_SOURCE
 )
 list(APPEND SOURCES ${XATLAS_SOURCE})
 
+set(THIRD_PARTY_SOURCES ${IMGUI_SOURCES} ${IMGUIZMO_SOURCES} ${IGFD_SOURCE} ${XATLAS_SOURCE})
+if(MSVC)
+    set_source_files_properties(${THIRD_PARTY_SOURCES} PROPERTIES COMPILE_FLAGS "/W0")
+else()
+    set_source_files_properties(${THIRD_PARTY_SOURCES} PROPERTIES COMPILE_FLAGS "-w")
+endif()
+
 add_executable(Mesh2Splat ${SOURCES})
 
 target_compile_definitions(Mesh2Splat PRIVATE GLEW_STATIC)
+
+if(MSVC)
+    target_compile_options(Mesh2Splat PRIVATE
+        /wd4244   # conversion, possible loss of data
+        /wd4267   # size_t to smaller integer conversion
+        /wd4018   # signed/unsigned mismatch
+        /wd4101   # unreferenced local variable
+    )
+    target_link_options(Mesh2Splat PRIVATE
+        /ignore:4098  # defaultlib runtime library conflict (glew32s.lib)
+        /ignore:4099  # PDB not found for glew32s.lib
+    )
+endif()
 
 if (WIN32)
     target_link_libraries(Mesh2Splat 

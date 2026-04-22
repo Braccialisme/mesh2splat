@@ -9,16 +9,12 @@
 
 uniform sampler2D gPosition;
 uniform sampler2D gAlbedo;
-uniform sampler2D gDepth;
 uniform sampler2D gNormal;
 uniform sampler2D gMetallicRoughness;
 
-uniform mat4 u_worldToView;
-uniform vec2 u_resolution;
 uniform vec3 u_LightPosition;
 uniform vec3 u_camPos;
 uniform vec3 u_lightColor;
-uniform bool u_isLightingEnalbed;
 uniform float u_farPlane;
 uniform float u_lightIntensity;
 uniform int u_renderMode;
@@ -100,7 +96,6 @@ float computeShadowFactor(vec3 pos)
 
 void main() {
     vec3 albedo         = texture(gAlbedo, fragUV).rgb;
-    vec3 depth         = texture(gDepth, fragUV).rgb;
 
     if(u_renderMode == 5) //PBR props visualization
     {

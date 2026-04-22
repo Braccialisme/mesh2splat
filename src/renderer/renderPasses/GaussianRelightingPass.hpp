@@ -17,6 +17,6 @@ private:
     GLuint m_fullscreenQuadEBO = 0;
 
     void bindGBufferAndDraw(GLuint shader, RenderContext& renderContext,
-        GLuint positionTex, GLuint normalTex, GLuint albedoTex, GLuint depthTex, GLuint metallicRoughnessTex);
+        GLuint positionTex, GLuint normalTex, GLuint albedoTex, GLuint metallicRoughnessTex);
     void setLightingUniforms(GLuint shader, RenderContext& renderContext);
 };

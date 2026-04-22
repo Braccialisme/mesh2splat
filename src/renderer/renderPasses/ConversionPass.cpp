@@ -97,14 +97,6 @@ void ConversionPass::conversion(
             glUtils::setTexture2D(converterProgramID, "metallicRoughnessTexture", textureMap.at(METALLIC_ROUGHNESS_TEXTURE).glTextureID,     2);
             glUtils::setUniform1i(converterProgramID, "hasMetallicRoughnessMap", 1);
         }
-        if (textureMap.find(AO_TEXTURE) != textureMap.end())
-        {
-            glUtils::setTexture2D(converterProgramID, "occlusionTexture", textureMap.at(AO_TEXTURE).glTextureID,          3);
-        }
-        if (textureMap.find(EMISSIVE_TEXTURE) != textureMap.end())
-        {
-            glUtils::setTexture2D(converterProgramID, "emissiveTexture", textureMap.at(EMISSIVE_TEXTURE).glTextureID,     4);
-        }
     }
 
     glUtils::setUniform4f(converterProgramID,      "u_materialFactor", mesh.first.material.baseColorFactor);

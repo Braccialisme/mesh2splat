@@ -26,7 +26,6 @@ unsigned int RadixSortPass::computeKeyValuesPre(RenderContext& renderContext)
     GLuint radixSortPrepassProgramID = renderContext.shaderRegistry.getProgramID(glUtils::ShaderProgramTypes::RadixSortPrepassProgram);
 
     glUseProgram(radixSortPrepassProgramID);
-    glUtils::setUniformMat4(radixSortPrepassProgramID, "u_view", renderContext.viewMat);
     glUtils::setUniform1ui(radixSortPrepassProgramID, "u_count", validCount);
 
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, renderContext.gaussianDepthPostFiltering);

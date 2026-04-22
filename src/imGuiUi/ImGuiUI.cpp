@@ -159,7 +159,7 @@ void ImGuiUI::renderPropertiesWindow()
     ImGui::Checkbox("Enable mesh-gaussian depth test (improves rendering performance)", &enableDepthTest);
 
     //TODO: right now std_dev is not updated in the actual gaussianBuffer, just during rendering. Need to consider this when exporting
-    if (ImGui::SliderFloat("Gaussian Scale", &gaussian_std, minStd, maxStd, "%.2f"));
+    ImGui::SliderFloat("Gaussian Scale", &gaussian_std, minStd, maxStd, "%.2f");
 
     ImGui::SeparatorText("Sampling density settings");
 
@@ -501,6 +501,7 @@ std::string ImGuiUI::getMeshFullFilePathDestination() const {
     {
         return destinationFilePathFolder + "/" + std::string(outputFilename);
     }
+    return destinationFilePathFolder + "/" + std::string(outputFilename);
 };
 
 std::string ImGuiUI::getPlyFilePath() const { return std::string(plyFilePath); };

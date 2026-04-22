@@ -42,13 +42,12 @@ GaussianRelightingPass::GaussianRelightingPass()
 void GaussianRelightingPass::bindGBufferAndDraw(
     GLuint shader,
     RenderContext& renderContext,
-    GLuint positionTex, GLuint normalTex, GLuint albedoTex, GLuint depthTex, GLuint metallicRoughnessTex)
+    GLuint positionTex, GLuint normalTex, GLuint albedoTex, GLuint metallicRoughnessTex)
 {
     glUtils::setTexture2D(shader, "gPosition", positionTex, 0);
     glUtils::setTexture2D(shader, "gNormal", normalTex, 1);
     glUtils::setTexture2D(shader, "gAlbedo", albedoTex, 2);
-    glUtils::setTexture2D(shader, "gDepth", depthTex, 3);
-    glUtils::setTexture2D(shader, "gMetallicRoughness", metallicRoughnessTex, 4);
+    glUtils::setTexture2D(shader, "gMetallicRoughness", metallicRoughnessTex, 3);
 
     glActiveTexture(GL_TEXTURE5);
     glBindTexture(GL_TEXTURE_CUBE_MAP, renderContext.pointLightData.m_shadowCubemap);
@@ -61,11 +60,7 @@ void GaussianRelightingPass::bindGBufferAndDraw(
 void GaussianRelightingPass::setLightingUniforms(GLuint shader, RenderContext& renderContext)
 {
     glUtils::setUniform3f(shader, "u_LightPosition", glm::vec3(renderContext.pointLightData.pointLightModel[3]));
-    glUtils::setUniformMat4(shader, "u_clipToView", glm::inverse(renderContext.projMat));
-    glUtils::setUniformMat4(shader, "u_worldToView", renderContext.viewMat);
-    glUtils::setUniform2i(shader, "u_resolution", renderContext.rendererResolution);
     glUtils::setUniform3f(shader, "u_camPos", renderContext.camPos);
-    glUtils::setUniform1i(shader, "u_isLightingEnalbed", renderContext.pointLightData.lightingEnabled);
     glUtils::setUniform1f(shader, "u_farPlane", renderContext.farPlane);
     glUtils::setUniform1f(shader, "u_lightIntensity", renderContext.pointLightData.lightIntensity);
     glUtils::setUniform1i(shader, "u_renderMode", renderContext.renderMode);
@@ -112,15 +107,13 @@ void GaussianRelightingPass::execute(RenderContext& renderContext)
         glStencilFunc(GL_EQUAL, 0, 0xFF);
         bindGBufferAndDraw(shader, renderContext,
             renderContext.gPosition, renderContext.gNormal,
-            renderContext.gAlbedo, renderContext.gDepth,
-            renderContext.gMetallicRoughness);
+            renderContext.gAlbedo, renderContext.gMetallicRoughness);
 
         // --- Pass 2: Mesh side (stencil == 1, left) ---
         glStencilFunc(GL_EQUAL, 1, 0xFF);
         bindGBufferAndDraw(shader, renderContext,
             renderContext.meshGPosition, renderContext.meshGNormal,
-            renderContext.meshGAlbedo, renderContext.meshGDepth,
-            renderContext.meshGMetallicRoughness);
+            renderContext.meshGAlbedo, renderContext.meshGMetallicRoughness);
 
         glDisable(GL_STENCIL_TEST);
 
@@ -138,8 +131,7 @@ void GaussianRelightingPass::execute(RenderContext& renderContext)
         // Normal single-pass rendering (no split-screen)
         bindGBufferAndDraw(shader, renderContext,
             renderContext.gPosition, renderContext.gNormal,
-            renderContext.gAlbedo, renderContext.gDepth,
-            renderContext.gMetallicRoughness);
+            renderContext.gAlbedo, renderContext.gMetallicRoughness);
     }
 
 #ifdef  _DEBUG
