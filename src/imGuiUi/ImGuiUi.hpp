@@ -80,6 +80,8 @@ public:
     bool isSplitScreenEnabled() const;
     float getSplitScreenPosition() const;
 
+    float getMovementSpeed() const { return movementSpeed; }
+
 
     enum class VisualizationOption
     {
@@ -114,8 +116,8 @@ public:
 
 private:
     int resolutionIndex = 0;
-    const int resolutionOptions[3] = { 1024, 2048, 4096 };
-    const char* resolutionLabels[3] = { "1024", "2048", "4096" };
+    const int resolutionOptions[4] = { 1024, 2048, 4096, 8192 };
+    const char* resolutionLabels[4] = { "1024", "2048", "4096", "8192" };
     
     int formatIndex = 0;
     const unsigned int formatOptions[3] = { 0, 1, 2 };
@@ -157,6 +159,8 @@ private:
 
     bool splitScreenEnabled = false;
     float splitScreenPosition = 0.5f;
+
+    float movementSpeed = 2.0f; // camera navigation speed, exposed via Properties slider
 
     std::string meshFilePath;
     std::string meshParentFolder;

@@ -56,7 +56,7 @@ void ConversionPass::execute(RenderContext &renderContext)
     glBindBuffer(GL_ATOMIC_COUNTER_BUFFER, renderContext.atomicCounterBufferConversionPass);
     uint32_t numGs;
     glGetBufferSubData(GL_ATOMIC_COUNTER_BUFFER, 0, sizeof(uint32_t), &numGs);
-    renderContext.numberOfGaussians = numGs;
+    renderContext.numberOfGaussians = std::min(numGs, maxGaussians);
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
     glDeleteRenderbuffers(1, &drawBuffers); 

@@ -85,10 +85,10 @@ namespace glUtils
     void resetAtomicCounter(GLuint atomicCounterBuffer);
 
     template<typename T>
-    void resizeAndBindToPosSSBO(unsigned int size, GLuint buffer, unsigned int bindingPos)
+    void resizeAndBindToPosSSBO(size_t size, GLuint buffer, unsigned int bindingPos)
     {
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, buffer);
-        GLsizeiptr bufferSize = size * sizeof(T);
+        GLsizeiptr bufferSize = static_cast<GLsizeiptr>(size) * sizeof(T);
         glBufferData(GL_SHADER_STORAGE_BUFFER, bufferSize, nullptr, GL_STREAM_DRAW);
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, bindingPos, buffer);
         glUnmapBuffer(GL_SHADER_STORAGE_BUFFER);
@@ -97,6 +97,10 @@ namespace glUtils
 
     std::string resolveIncludes(const std::string& source, const fs::path& baseDir);
     std::string readShaderFile(const char* filePath);
+
+    // Returns free dedicated VRAM in MB, or -1 if the GPU/driver doesn't support the query
+    // (NVIDIA-only via GL_NVX_gpu_memory_info; AMD/Intel fall back to -1 = guard skipped).
+    long long getAvailableVramMB();
 
     namespace fs = std::filesystem;
 

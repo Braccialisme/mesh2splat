@@ -659,7 +659,7 @@ void SceneManager::exportPly(const std::string outputFile, unsigned int exportFo
     glGetBufferSubData(
         GL_SHADER_STORAGE_BUFFER,
         0,
-        renderContext.numberOfGaussians * sizeof(utils::GaussianDataSSBO),
+        static_cast<GLsizeiptr>(renderContext.numberOfGaussians) * sizeof(utils::GaussianDataSSBO),
         cpuData.data()
     );
     

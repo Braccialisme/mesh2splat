@@ -71,6 +71,13 @@ add_executable(Mesh2Splat ${SOURCES})
 
 target_compile_definitions(Mesh2Splat PRIVATE GLEW_STATIC)
 
+# Copy the shader files next to the built executable so the app can find them
+# relative to its own location (portable: works from any folder / machine).
+add_custom_command(TARGET Mesh2Splat POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        ${CMAKE_SOURCE_DIR}/src/shaders
+        $<TARGET_FILE_DIR:Mesh2Splat>/shaders)
+
 if(MSVC)
     target_compile_options(Mesh2Splat PRIVATE
         /wd4244   # conversion, possible loss of data

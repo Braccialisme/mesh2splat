@@ -6,7 +6,7 @@
 #pragma once
 #include "RenderContext.hpp"
 
-#define MAX_GAUSSIANS_TO_SORT 7000000 
+#define MAX_GAUSSIANS_TO_SORT 50000000 
 
 class IRenderPass {
 public:

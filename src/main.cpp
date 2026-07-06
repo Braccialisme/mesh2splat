@@ -41,6 +41,7 @@ int main(int argc, char** argv) {
 
         glfwPollEvents();
         
+        camera.SetMovementSpeed(ImGuiUI.getMovementSpeed());
         ioHandler.processInput(deltaTime);
 
         renderer.clearingPrePass(ImGuiUI.getSceneBackgroundColor());

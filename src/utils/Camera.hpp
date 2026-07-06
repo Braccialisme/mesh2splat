@@ -20,6 +20,8 @@ public:
     void ProcessMouseScroll(float yoffset);
     float GetFOV() const { return FOV; }
     glm::vec3 GetPosition() const { return Position; }
+    float GetMovementSpeed() const { return MovementSpeed; }
+    void SetMovementSpeed(float speed) { MovementSpeed = speed; }
 
 private:
     glm::vec3 Position;

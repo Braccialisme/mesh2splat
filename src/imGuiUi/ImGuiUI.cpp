@@ -4,6 +4,7 @@
 ///////////////////////////////////////////////////////////////////////////////
 
 #include "ImGuiUi.hpp"
+#include "utils/glUtils.hpp"
 
 ImGuiUI::ImGuiUI(float defaultGaussianStd, float defaultMesh2SPlatQuality)
     : resolutionIndex(0),
@@ -171,6 +172,27 @@ void ImGuiUI::renderPropertiesWindow()
         maxRes = resolutionOptions[resolutionIndex];
         runConversionFlag = true;
     }
+
+    // Live VRAM anticipator: estimate this conversion's GPU memory need vs. what's free.
+    {
+        long long freeMB = glUtils::getAvailableVramMB();
+        long long r      = static_cast<long long>(getResolutionTarget());
+        long long estMB  = (r * r * 96 + r * r * 16 * 2) / (1024 * 1024);
+        if (freeMB < 0) {
+            ImGui::TextDisabled("Est. VRAM: ~%lld MB  (free: n/a)", estMB);
+        } else if (estMB > freeMB) {
+            ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.35f, 1.0f),
+                "Est. VRAM: ~%lld MB / %lld MB free  -- may corrupt!", estMB, freeMB);
+        } else {
+            ImGui::TextColored(ImVec4(0.4f, 0.9f, 0.4f, 1.0f),
+                "Est. VRAM: ~%lld MB / %lld MB free  OK", estMB, freeMB);
+        }
+    }
+
+    ImGui::SeparatorText("Navigation");
+    ImGui::SliderFloat("Movement speed", &movementSpeed, 0.1f, 200.0f, "%.2f", ImGuiSliderFlags_Logarithmic);
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Reset")) { movementSpeed = 2.0f; }
 
     ImGui::Dummy(ImVec2(0, 2.0f));
     ImGui::SeparatorText("##");
@@ -645,6 +667,3 @@ void ImGuiUI::cancelBatch()
 
 
 const std::vector<ImGuiUI::BatchItem>& ImGuiUI::getBatchItems() const { return batchItems; }
-
-
-

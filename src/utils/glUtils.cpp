@@ -6,6 +6,10 @@
 #include "glUtils.hpp"
 #include "utils/ShaderRegistry.hpp"
 
+#ifdef _WIN32
+#include <windows.h>
+#endif
+
 namespace glUtils 
 {
 
@@ -67,17 +71,47 @@ namespace glUtils
             return resolveIncludes(shaderStream.str(), fs::path(filePath).parent_path());
         }
         catch (std::ifstream::failure& e) {
+            std::string msg = std::string("Could not read shader file:\n") + filePath +
+                              "\n\nMake sure the 'shaders' folder sits next to Mesh2Splat.exe.";
             std::cerr << "ERROR::SHADER::FILE_NOT_SUCCESFULLY_READ: " << e.what() << std::endl;
+#ifdef _WIN32
+            MessageBoxA(nullptr, msg.c_str(), "Mesh2Splat - missing shader", MB_OK | MB_ICONERROR);
+#endif
             exit(1);
         }
     }
 
+#ifndef GPU_MEMORY_INFO_CURRENT_AVAILABLE_VIDMEM_NVX
+#define GPU_MEMORY_INFO_CURRENT_AVAILABLE_VIDMEM_NVX 0x9049
+#endif
+
+    long long getAvailableVramMB()
+    {
+        while (glGetError() != GL_NO_ERROR) {} // clear any pending error
+        GLint availKb = 0;
+        glGetIntegerv(GPU_MEMORY_INFO_CURRENT_AVAILABLE_VIDMEM_NVX, &availKb);
+        if (glGetError() != GL_NO_ERROR || availKb <= 0) return -1; // unsupported
+        return static_cast<long long>(availKb) / 1024;
+    }
+
     ShaderLocations shaderLocations;
+
+    // Returns the directory containing the running executable, so shader files
+    // are located relative to the .exe rather than a compile-time source path.
+    static fs::path getExecutableDir() {
+#ifdef _WIN32
+        wchar_t buf[MAX_PATH];
+        DWORD n = GetModuleFileNameW(nullptr, buf, MAX_PATH);
+        return fs::path(std::wstring(buf, n)).parent_path();
+#else
+        return fs::canonical("/proc/self/exe").parent_path();
+#endif
+    }
 
     //Add new shader location here
     void initializeShaderLocations() {
 
-        fs::path shadersBase = fs::path(__FILE__).parent_path() / "../shaders"; //Todo: rather move the shader files relative to the exe loc
+        fs::path shadersBase = getExecutableDir() / "shaders"; // shaders/ ships next to the exe
     
         shaderLocations.converterVertexShaderLocation                   = (shadersBase / "conversion" / "converterVS.glsl").string();
         shaderLocations.converterGeomShaderLocation                     = (shadersBase / "conversion" / "converterGS.glsl").string();
