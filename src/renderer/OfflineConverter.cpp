@@ -8,11 +8,14 @@
 
 #include <iostream>
 #include <sstream>
+#include <fstream>
+#include <iomanip>
 #include <algorithm>
+#include <cmath>
+#include <filesystem>
 
 namespace
 {
-    // Format big counts with thousands separators for the status line.
     std::string withCommas(uint64_t v)
     {
         std::string s = std::to_string(v);
@@ -24,27 +27,25 @@ namespace
 
 bool OfflineConverter::start(RenderContext& ctx,
                              const std::string& outputPath,
+                             float requestedTileSize,
                              unsigned int requestedBatchCapacity)
 {
     if (running) return false;
 
-    if (ctx.dataMeshAndGlMesh.empty()) {
-        status = "No mesh loaded.";
-        return false;
-    }
-    if (outputPath.empty()) {
-        status = "No output path.";
-        return false;
-    }
+    if (ctx.dataMeshAndGlMesh.empty()) { status = "No mesh loaded.";   return false; }
+    if (outputPath.empty())            { status = "No output path.";   return false; }
 
     batchCapacity     = std::max(requestedBatchCapacity, 1000u);
+    tileSize          = requestedTileSize;
+    tiled             = (tileSize > 0.0f);
     totalVertices     = 0;
     processedVertices = 0;
+    totalWritten      = 0;
     batchesDone       = 0;
     work.clear();
+    tiles.clear();
+    outputPathStored  = outputPath;
 
-    // One initial work range per mesh: the whole mesh. Ranges that overflow
-    // the batch buffer get split adaptively in step().
     for (size_t i = 0; i < ctx.dataMeshAndGlMesh.size(); ++i)
     {
         GLsizei vertexCount = static_cast<GLsizei>(ctx.dataMeshAndGlMesh[i].second.vertexCount);
@@ -52,20 +53,32 @@ bool OfflineConverter::start(RenderContext& ctx,
         work.push_back({ i, 0, vertexCount });
         totalVertices += static_cast<uint64_t>(vertexCount);
     }
-    if (work.empty()) {
-        status = "Mesh has no triangles.";
-        return false;
+    if (work.empty()) { status = "Mesh has no triangles."; return false; }
+
+    // Same scale semantics as the live exporter.
+    scaleMultiplierStored = ctx.gaussianStd / static_cast<float>(ctx.resolutionTarget);
+
+    if (tiled)
+    {
+        // <output-without-extension>_tiles/  next to the requested output.
+        std::filesystem::path p(outputPath);
+        sourceName = p.stem().string();
+        std::filesystem::path dir = p.parent_path() / (p.stem().string() + "_tiles");
+        std::error_code ec;
+        std::filesystem::create_directories(dir, ec);
+        if (ec) { status = "Could not create tile folder: " + dir.string(); return false; }
+        tilesDir = dir.string();
+        // Tile writers are created lazily in tileFor() as gaussians arrive.
+    }
+    else
+    {
+        sourceName = std::filesystem::path(outputPath).stem().string();
+        if (!singleWriter.open(outputPath, scaleMultiplierStored)) {
+            status = "Could not open output file: " + outputPath;
+            return false;
+        }
     }
 
-    // Same scale semantics as the live exporter (SceneManager::exportPly).
-    float scaleMultiplier = ctx.gaussianStd / static_cast<float>(ctx.resolutionTarget);
-
-    if (!writer.open(outputPath, scaleMultiplier)) {
-        status = "Could not open output file: " + outputPath;
-        return false;
-    }
-
-    // One fixed-size gaussian output buffer, reused for every batch.
     glGenBuffers(1, &offlineGaussianBuffer);
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, offlineGaussianBuffer);
     GLsizeiptr bufferSize = static_cast<GLsizeiptr>(batchCapacity) * sizeof(utils::GaussianDataSSBO);
@@ -74,10 +87,32 @@ bool OfflineConverter::start(RenderContext& ctx,
 
     running = true;
     status  = "Starting...";
-    std::cout << "[Offline] Conversion started -> " << outputPath
+    std::cout << "[Offline] Conversion started -> "
+              << (tiled ? tilesDir + "  (tile size " + std::to_string(tileSize) + ")" : outputPath)
               << "  (batch capacity " << withCommas(batchCapacity) << " gaussians, "
               << withCommas(bufferSize / (1024 * 1024)) << " MB VRAM)" << std::endl;
     return true;
+}
+
+OfflineConverter::TileState* OfflineConverter::tileFor(int i, int j)
+{
+    auto key = std::make_pair(i, j);
+    auto it  = tiles.find(key);
+    if (it != tiles.end()) return &it->second;
+
+    if (tiles.size() >= kMaxOpenTiles) {
+        fail("More than " + std::to_string(kMaxOpenTiles) +
+             " tiles -- tile size is too small for this model. Increase it.");
+        return nullptr;
+    }
+
+    TileState& t = tiles[key];   // constructed in place (writer is not movable)
+    t.filename = "tile_" + std::to_string(i) + "_" + std::to_string(j) + ".ply";
+    if (!t.writer.open(tilesDir + "/" + t.filename, scaleMultiplierStored)) {
+        fail("Could not open tile file: " + t.filename);
+        return nullptr;
+    }
+    return &t;
 }
 
 bool OfflineConverter::step(RenderContext& ctx)
@@ -85,16 +120,7 @@ bool OfflineConverter::step(RenderContext& ctx)
     if (!running) return false;
 
     if (work.empty()) {
-        // All ranges done: patch the header with the final count and close.
-        if (writer.finalize()) {
-            status = "Done: " + withCommas(writer.writtenCount()) + " gaussians written.";
-            std::cout << "[Offline] " << status << std::endl;
-        } else {
-            status = "FAILED while finalizing the output file (disk full?).";
-            std::cerr << "[Offline] " << status << std::endl;
-        }
-        cleanupGpu();
-        running = false;
+        finishAndWriteManifest(); // sets final status; run ends either way
         return false;
     }
 
@@ -103,9 +129,6 @@ bool OfflineConverter::step(RenderContext& ctx)
 
     auto& mesh = ctx.dataMeshAndGlMesh[range.meshIndex];
 
-    // --- One conversion pass over this triangle range. Mirrors
-    // ConversionPass::execute/conversion, but draws only the range and
-    // appends into our own fixed-size buffer.
     GLuint program = ctx.shaderRegistry.getProgramID(glUtils::ShaderProgramTypes::ConverterProgram);
     glUseProgram(program);
 
@@ -124,7 +147,6 @@ bool OfflineConverter::step(RenderContext& ctx)
     glEnable(GL_BLEND);
     glDisable(GL_CULL_FACE);
 
-    // Per-mesh material uniforms/textures (same as ConversionPass::conversion).
     glUtils::setUniform1i(program, "hasAlbedoMap", 0);
     glUtils::setUniform1i(program, "hasNormalMap", 0);
     glUtils::setUniform1i(program, "hasMetallicRoughnessMap", 0);
@@ -156,9 +178,6 @@ bool OfflineConverter::step(RenderContext& ctx)
 
     glFinish();
 
-    // How many gaussians did this range WANT to produce? (The counter keeps
-    // counting past the cap; excess fragments were discarded, so overflow is
-    // always detectable and nothing corrupt can be written.)
     uint32_t numGs = 0;
     glBindBuffer(GL_ATOMIC_COUNTER_BUFFER, ctx.atomicCounterBufferConversionPass);
     glGetBufferSubData(GL_ATOMIC_COUNTER_BUFFER, 0, sizeof(uint32_t), &numGs);
@@ -169,9 +188,6 @@ bool OfflineConverter::step(RenderContext& ctx)
 
     if (numGs > batchCapacity)
     {
-        // Overflow: this range's output doesn't fit. Split it in half
-        // (triangle-aligned) and re-queue both halves at the front so
-        // processing order is preserved. Written file is untouched.
         if (range.vertexCount <= 3) {
             fail("A single triangle produced " + withCommas(numGs) +
                  " gaussians, exceeding the batch capacity of " + withCommas(batchCapacity) +
@@ -180,31 +196,85 @@ bool OfflineConverter::step(RenderContext& ctx)
         }
         GLsizei halfTriangles = (range.vertexCount / 3) / 2;
         GLsizei half          = std::max<GLsizei>(halfTriangles, 1) * 3;
-
-        WorkRange a{ range.meshIndex, range.firstVertex,        half };
-        WorkRange b{ range.meshIndex, range.firstVertex + half, range.vertexCount - half };
-        work.push_front(b);
-        work.push_front(a);
-
+        work.push_front({ range.meshIndex, range.firstVertex + half, range.vertexCount - half });
+        work.push_front({ range.meshIndex, range.firstVertex,        half });
         status = "Batch too dense (" + withCommas(numGs) + " gaussians) -- splitting and retrying...";
         std::cout << "[Offline] " << status << std::endl;
         return true;
     }
 
-    // Read back only what was produced and stream it to disk.
     if (numGs > 0)
     {
         readback.resize(numGs);
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, offlineGaussianBuffer);
         glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
-        glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0,
-                           static_cast<GLsizeiptr>(numGs) * sizeof(utils::GaussianDataSSBO),
-                           readback.data());
+        {
+            const GLsizeiptr sliceBytes = 512ll * 1024ll * 1024ll;
+            const GLsizeiptr totalBytes =
+                static_cast<GLsizeiptr>(numGs) * static_cast<GLsizeiptr>(sizeof(utils::GaussianDataSSBO));
+            char*      dst    = reinterpret_cast<char*>(readback.data());
+            GLsizeiptr offset = 0;
+            while (offset < totalBytes)
+            {
+                GLsizeiptr chunk = (totalBytes - offset < sliceBytes) ? (totalBytes - offset) : sliceBytes;
+                glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, offset, chunk, dst + offset);
+                offset += chunk;
+            }
+        }
+        GLenum err = glGetError();
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
-
-        if (!writer.appendBatch(readback)) {
-            fail("Write to disk failed (disk full?). Partial file removed.");
+        if (err != GL_NO_ERROR) {
+            fail("GPU readback failed (GL error) -- nothing corrupt was written.");
             return false;
+        }
+
+        if (!tiled)
+        {
+            if (!singleWriter.appendBatch(readback)) {
+                fail("Write to disk failed (disk full?). Partial file removed.");
+                return false;
+            }
+            totalWritten += numGs;
+        }
+        else
+        {
+            // Bucket this batch by ground-plane grid cell, then stream each
+            // bucket to its tile writer. Bucketing is CPU-side and cheap:
+            // one pass to group, one append per touched tile.
+            std::map<std::pair<int, int>, std::vector<uint32_t>> groups;
+            const float invTs = 1.0f / tileSize;
+            for (uint32_t g = 0; g < numGs; ++g)
+            {
+                const auto& pos = readback[g].position;
+                int i = 0, j = 0;
+                if (std::isfinite(pos.x) && std::isfinite(pos.z)) {
+                    i = static_cast<int>(std::floor(pos.x * invTs));
+                    j = static_cast<int>(std::floor(pos.z * invTs));
+                }
+                groups[{i, j}].push_back(g);
+            }
+
+            for (auto& [key, indices] : groups)
+            {
+                TileState* tile = tileFor(key.first, key.second);
+                if (!tile) return false; // fail() already called
+
+                tileBucket.clear();
+                tileBucket.reserve(indices.size());
+                for (uint32_t idx : indices)
+                {
+                    const auto& gaus = readback[idx];
+                    tileBucket.push_back(gaus);
+                    tile->bboxMin = glm::min(tile->bboxMin, glm::vec3(gaus.position));
+                    tile->bboxMax = glm::max(tile->bboxMax, glm::vec3(gaus.position));
+                }
+                if (!tile->writer.appendBatch(tileBucket)) {
+                    fail("Write to tile " + tile->filename + " failed (disk full?).");
+                    return false;
+                }
+                tile->count  += indices.size();
+                totalWritten += indices.size();
+            }
         }
     }
 
@@ -212,22 +282,95 @@ bool OfflineConverter::step(RenderContext& ctx)
     ++batchesDone;
 
     std::ostringstream ss;
-    ss << "Batch " << batchesDone << " done -- "
-       << withCommas(writer.writtenCount()) << " gaussians written ("
-       << (writer.writtenCount() * sizeof(float) * 62) / (1024 * 1024) << " MB)";
+    ss << "Batch " << batchesDone << " done -- " << withCommas(totalWritten) << " gaussians";
+    if (tiled) ss << " across " << tiles.size() << " tiles";
+    ss << " (" << (totalWritten * sizeof(float) * 62) / (1024 * 1024) << " MB)";
     status = ss.str();
 
     return true;
 }
 
+bool OfflineConverter::finishAndWriteManifest()
+{
+    bool ok = true;
+
+    if (!tiled)
+    {
+        ok = singleWriter.finalize();
+        if (ok) status = "Done: " + withCommas(totalWritten) + " gaussians written.";
+        else    status = "FAILED while finalizing the output file (disk full?).";
+    }
+    else
+    {
+        for (auto& [key, tile] : tiles)
+            if (!tile.writer.finalize()) { ok = false; break; }
+
+        if (ok)
+        {
+            std::ofstream m(tilesDir + "/manifest.json", std::ios::trunc);
+            m << std::setprecision(9);
+            m << "{\n";
+            m << "  \"version\": 1,\n";
+            m << "  \"generator\": \"mesh2splat OfflineConverter (tiled)\",\n";
+            m << "  \"source\": \"" << sourceName << "\",\n";
+            m << "  \"gaussian_format\": \"3dgs-standard-ply\",\n";
+            m << "  \"tile_size\": " << tileSize << ",\n";
+            m << "  \"grid_plane\": \"xz\",\n";
+            m << "  \"grid_convention\": \"tile (i,j) spans x in [i*tile_size,(i+1)*tile_size), z likewise; y unbounded\",\n";
+            m << "  \"total_gaussians\": " << totalWritten << ",\n";
+            m << "  \"crs\": null,\n";
+            m << "  \"transform\": null,\n";
+            m << "  \"transform_note\": \"4x4 row-major local-to-georeferenced transform; filled by downstream pipeline\",\n";
+            m << "  \"tiles\": [\n";
+            size_t n = 0;
+            for (auto& [key, tile] : tiles)
+            {
+                m << "    { \"i\": " << key.first << ", \"j\": " << key.second
+                  << ", \"file\": \"" << tile.filename << "\""
+                  << ", \"count\": " << tile.count
+                  << ", \"bbox_min\": [" << tile.bboxMin.x << ", " << tile.bboxMin.y << ", " << tile.bboxMin.z << "]"
+                  << ", \"bbox_max\": [" << tile.bboxMax.x << ", " << tile.bboxMax.y << ", " << tile.bboxMax.z << "] }"
+                  << (++n < tiles.size() ? "," : "") << "\n";
+            }
+            m << "  ]\n}\n";
+            ok = m.good();
+            m.close();
+
+            status = "Done: " + withCommas(totalWritten) + " gaussians across "
+                   + std::to_string(tiles.size()) + " tiles + manifest.json";
+        }
+        else
+        {
+            status = "FAILED while finalizing tile files (disk full?).";
+        }
+    }
+
+    if (ok) std::cout << "[Offline] " << status << std::endl;
+    else    std::cerr << "[Offline] " << status << std::endl;
+
+    cleanupGpu();
+    running = false;
+    return ok;
+}
+
+void OfflineConverter::abortAllWriters()
+{
+    if (!tiled) { singleWriter.abort(); return; }
+    for (auto& [key, tile] : tiles) tile.writer.abort(); // closes + deletes each tile file
+    std::error_code ec;
+    std::filesystem::remove(std::filesystem::path(tilesDir) / "manifest.json", ec);
+    std::filesystem::remove(tilesDir, ec); // removed only if empty
+}
+
 void OfflineConverter::cancel()
 {
     if (!running) return;
-    writer.abort();  // closes and deletes the partial file
+    abortAllWriters();
     cleanupGpu();
     work.clear();
+    tiles.clear();
     running = false;
-    status  = "Cancelled -- partial file deleted.";
+    status  = "Cancelled -- partial output deleted.";
     std::cout << "[Offline] " << status << std::endl;
 }
 
@@ -242,9 +385,10 @@ void OfflineConverter::fail(const std::string& why)
 {
     status = "FAILED: " + why;
     std::cerr << "[Offline] " << status << std::endl;
-    writer.abort();
+    abortAllWriters();
     cleanupGpu();
     work.clear();
+    tiles.clear();
     running = false;
 }
 
@@ -256,4 +400,6 @@ void OfflineConverter::cleanupGpu()
     }
     readback.clear();
     readback.shrink_to_fit();
+    tileBucket.clear();
+    tileBucket.shrink_to_fit();
 }

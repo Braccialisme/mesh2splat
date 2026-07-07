@@ -223,7 +223,7 @@ void GuiRendererConcreteMediator::update()
         // drive exactly one batch per frame so the window keeps pumping.
         if (imguiUI.shouldStartOfflineConversion()) {
             imguiUI.clearOfflineConvertRequest();
-            renderer.startOfflineConversion(imguiUI.getMeshFullFilePathDestination());
+            renderer.startOfflineConversion(imguiUI.getMeshFullFilePathDestination(), imguiUI.getOfflineTileSize());
         }
         if (renderer.isOfflineConversionRunning()) {
             if (imguiUI.wantsOfflineCancel()) {

@@ -64,8 +64,8 @@ public:
 
 	// --- Offline (chunked-to-disk) conversion. Driven one batch per frame
 	// by the mediator; see OfflineConverter for the details.
-	bool startOfflineConversion(const std::string& outputPath) {
-		return offlineConverter.start(renderContext, outputPath);
+	bool startOfflineConversion(const std::string& outputPath, float tileSize) {
+		return offlineConverter.start(renderContext, outputPath, tileSize);
 	}
 	void stepOfflineConversion()          { offlineConverter.step(renderContext); }
 	void cancelOfflineConversion()        { offlineConverter.cancel(); }

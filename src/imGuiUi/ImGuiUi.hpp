@@ -83,6 +83,7 @@ public:
     float getMovementSpeed() const { return movementSpeed; }
 
     // --- Offline (chunked-to-disk) conversion UI plumbing
+    float getOfflineTileSize() const          { return offlineTileSize; }
     bool shouldStartOfflineConversion() const { return offlineConvertRequested; }
     void clearOfflineConvertRequest()         { offlineConvertRequested = false; }
     bool wantsOfflineCancel() const           { return offlineCancelRequested; }
@@ -176,6 +177,7 @@ private:
     float movementSpeed = 2.0f; // camera navigation speed, exposed via Properties slider
 
     // Offline (chunked-to-disk) conversion state
+    float offlineTileSize        = 0.0f;   // 0 = single file; >0 = XZ tile edge in world units
     bool offlineConvertRequested = false;
     bool offlineCancelRequested  = false;
     bool offlineRunning          = false;

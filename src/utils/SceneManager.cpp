@@ -652,16 +652,69 @@ void SceneManager::exportPly(const std::string outputFile, unsigned int exportFo
 {
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, renderContext.gaussianBuffer);
 
-    std::vector<utils::GaussianDataSSBO> cpuData(renderContext.numberOfGaussians);
+    while (glGetError() != GL_NO_ERROR) {} // clear stale errors first
+
+    // --- Honesty check: how big is the buffer REALLY? A glBufferData that
+    // failed under VRAM pressure leaves the previous, smaller buffer behind
+    // while the code believes the resize succeeded; the shader then silently
+    // drops every write past the real end and the export reads ghosts.
+    // Query the driver instead of trusting our own bookkeeping.
+    GLint64 realBufferBytes = 0;
+    glGetBufferParameteri64v(GL_SHADER_STORAGE_BUFFER, GL_BUFFER_SIZE, &realBufferBytes);
+    GLint64 maxBlockBytes = 0;
+    glGetInteger64v(GL_MAX_SHADER_STORAGE_BLOCK_SIZE, &maxBlockBytes);
+
+    const unsigned long long requested    = renderContext.numberOfGaussians;
+    const unsigned long long realCapacity =
+        static_cast<unsigned long long>(realBufferBytes) / sizeof(utils::GaussianDataSSBO);
+    const unsigned long long exportCount  = (requested < realCapacity) ? requested : realCapacity;
+
+    std::cout << "[Export] gaussians requested: " << requested
+              << " | real buffer: " << realBufferBytes << " B (capacity " << realCapacity
+              << ") | GL_MAX_SHADER_STORAGE_BLOCK_SIZE: " << maxBlockBytes << " B" << std::endl;
+
+    if (exportCount < requested) {
+        std::cerr << "[Export] WARNING: buffer really holds only " << exportCount << " of "
+                  << requested << " gaussians -- a GPU buffer resize failed silently "
+                  << "(VRAM pressure?). Exporting the valid part only. "
+                  << "Use offline conversion for exports of this size." << std::endl;
+    }
+    if (maxBlockBytes > 0 && realBufferBytes > maxBlockBytes) {
+        std::cerr << "[Export] WARNING: buffer (" << realBufferBytes
+                  << " B) exceeds GL_MAX_SHADER_STORAGE_BLOCK_SIZE (" << maxBlockBytes
+                  << " B) -- shader writes past that limit are undefined on this driver. "
+                  << "Use offline conversion." << std::endl;
+    }
+
+    std::vector<utils::GaussianDataSSBO> cpuData(exportCount);
 
     glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
-    
-    glGetBufferSubData(
-        GL_SHADER_STORAGE_BUFFER,
-        0,
-        static_cast<GLsizeiptr>(renderContext.numberOfGaussians) * sizeof(utils::GaussianDataSSBO),
-        cpuData.data()
-    );
+
+    // Sliced readback (single calls beyond ~2 GB are unreliable on many
+    // drivers), with per-slice error reporting.
+    {
+        const GLsizeiptr sliceBytes = 512ll * 1024ll * 1024ll; // 512 MB per read
+        const GLsizeiptr totalBytes =
+            static_cast<GLsizeiptr>(exportCount) *
+            static_cast<GLsizeiptr>(sizeof(utils::GaussianDataSSBO));
+
+        char*      dst    = reinterpret_cast<char*>(cpuData.data());
+        GLsizeiptr offset = 0;
+        int        slice  = 0;
+        while (offset < totalBytes)
+        {
+            GLsizeiptr chunk = (totalBytes - offset < sliceBytes) ? (totalBytes - offset) : sliceBytes;
+            glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, offset, chunk, dst + offset);
+            GLenum err = glGetError();
+            if (err != GL_NO_ERROR) {
+                std::cerr << "[Export] readback slice " << slice << " (offset " << offset
+                          << ", " << chunk << " B) FAILED, GL error 0x"
+                          << std::hex << err << std::dec << std::endl;
+            }
+            offset += chunk;
+            ++slice;
+        }
+    }
     
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
     
