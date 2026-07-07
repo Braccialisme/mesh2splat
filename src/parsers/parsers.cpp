@@ -4,6 +4,14 @@
 ///////////////////////////////////////////////////////////////////////////////
 
 #include "parsers.hpp"
+#include "IncrementalPlyWriter.hpp"
+
+// Step-1 verification switch: when 1, standard-format exports are written by
+// the new IncrementalPlyWriter AND by the legacy writer (to <output>.legacy.ply)
+// so the two can be byte-compared. Verified byte-identical on 1.3M gaussians
+// (2026-07-06); now 0. NOTE: since then the incremental writer sanitizes
+// inf/NaN opacity+scale, so a re-comparison would intentionally differ there.
+#define M2S_VERIFY_INCREMENTAL_WRITER 0
 
 namespace parsers
 { 
@@ -633,8 +641,30 @@ namespace parsers
         switch (FORMAT)
         {
             case 0:
-                writeBinaryPlyStandardFormat(outputFileLocation, gaussians_3D_list, scaleMultiplier);
+            {
+                IncrementalPlyWriter writer;
+                if (writer.open(outputFileLocation, scaleMultiplier))
+                {
+                    writer.appendBatch(gaussians_3D_list);
+                    if (!writer.finalize())
+                        std::cerr << "IncrementalPlyWriter: finalize failed for " << outputFileLocation << std::endl;
+                }
+                else
+                {
+                    std::cerr << "IncrementalPlyWriter: could not open " << outputFileLocation << std::endl;
+                }
+
+#if M2S_VERIFY_INCREMENTAL_WRITER
+                {
+                    // Legacy writer mutates the vector's scale values in place,
+                    // so it gets its own copy. Output goes to <output>.legacy.ply
+                    // for byte comparison against the incremental writer's file.
+                    std::vector<utils::GaussianDataSSBO> legacyCopy = gaussians_3D_list;
+                    writeBinaryPlyStandardFormat(outputFileLocation + ".legacy.ply", legacyCopy, scaleMultiplier);
+                }
+#endif
                 break;
+            }
     
             case 1:
                 writePbrPLY(outputFileLocation, gaussians_3D_list, scaleMultiplier);

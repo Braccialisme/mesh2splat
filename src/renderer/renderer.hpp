@@ -14,6 +14,7 @@
 #include "RenderPasses.hpp"
 #include "utils/SceneManager.hpp"
 #include "utils/ShaderRegistry.hpp"
+#include "OfflineConverter.hpp"
 
 class Renderer {
 public:
@@ -61,6 +62,18 @@ public:
 	void setSplitScreenEnabled(bool enabled);
 	void setSplitScreenPosition(float position);
 
+	// --- Offline (chunked-to-disk) conversion. Driven one batch per frame
+	// by the mediator; see OfflineConverter for the details.
+	bool startOfflineConversion(const std::string& outputPath) {
+		return offlineConverter.start(renderContext, outputPath);
+	}
+	void stepOfflineConversion()          { offlineConverter.step(renderContext); }
+	void cancelOfflineConversion()        { offlineConverter.cancel(); }
+	bool isOfflineConversionRunning() const     { return offlineConverter.isRunning(); }
+	float getOfflineProgress() const            { return offlineConverter.progress01(); }
+	unsigned long long getOfflineWritten() const { return offlineConverter.writtenCount(); }
+	const std::string& getOfflineStatus() const { return offlineConverter.statusText(); }
+
 
 
 
@@ -72,6 +85,8 @@ private:
 
 	std::unique_ptr<SceneManager> sceneManager;
 	RenderContext renderContext;
+
+	OfflineConverter offlineConverter;
 
 	double lastShaderCheckTime;
 

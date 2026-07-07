@@ -78,6 +78,12 @@ add_custom_command(TARGET Mesh2Splat POST_BUILD
         ${CMAKE_SOURCE_DIR}/src/shaders
         $<TARGET_FILE_DIR:Mesh2Splat>/shaders)
 
+# Copy the UI fonts next to the built executable (same portable mechanism).
+add_custom_command(TARGET Mesh2Splat POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        ${CMAKE_SOURCE_DIR}/src/fonts
+        $<TARGET_FILE_DIR:Mesh2Splat>/fonts)
+
 if(MSVC)
     target_compile_options(Mesh2Splat PRIVATE
         /wd4244   # conversion, possible loss of data

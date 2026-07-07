@@ -82,6 +82,19 @@ public:
 
     float getMovementSpeed() const { return movementSpeed; }
 
+    // --- Offline (chunked-to-disk) conversion UI plumbing
+    bool shouldStartOfflineConversion() const { return offlineConvertRequested; }
+    void clearOfflineConvertRequest()         { offlineConvertRequested = false; }
+    bool wantsOfflineCancel() const           { return offlineCancelRequested; }
+    void clearOfflineCancelRequest()          { offlineCancelRequested = false; }
+    void setOfflineState(bool running, float progress01, unsigned long long written, const std::string& statusText)
+    {
+        offlineRunning  = running;
+        offlineProgress = progress01;
+        offlineWritten  = written;
+        offlineStatus   = statusText;
+    }
+
 
     enum class VisualizationOption
     {
@@ -161,6 +174,14 @@ private:
     float splitScreenPosition = 0.5f;
 
     float movementSpeed = 2.0f; // camera navigation speed, exposed via Properties slider
+
+    // Offline (chunked-to-disk) conversion state
+    bool offlineConvertRequested = false;
+    bool offlineCancelRequested  = false;
+    bool offlineRunning          = false;
+    float offlineProgress        = 0.0f;
+    unsigned long long offlineWritten = 0;
+    std::string offlineStatus;
 
     std::string meshFilePath;
     std::string meshParentFolder;

@@ -5,6 +5,8 @@
 
 #include "ImGuiUi.hpp"
 #include "utils/glUtils.hpp"
+#include "NativeFileDialog.hpp"
+#include <iostream>
 
 ImGuiUI::ImGuiUI(float defaultGaussianStd, float defaultMesh2SPlatQuality)
     : resolutionIndex(0),
@@ -33,6 +35,20 @@ void ImGuiUI::initialize(GLFWwindow* window)
     ImGuiIO& io = ImGui::GetIO(); (void)io;
 
     ImGui::StyleColorsDark();
+
+    // --- UI font: VG5000 at 18px, shipped in fonts/ next to the exe (same
+    // portable mechanism as shaders/). Falls back silently to ImGui's default
+    // font if the file is missing. To revert: comment out this block.
+    {
+        std::string fontPath = utils::getExecutableDir() + "/fonts/VG5000-Regular_web.ttf";
+        ImFont* uiFont = io.Fonts->AddFontFromFileTTF(fontPath.c_str(), 18.0f);
+        if (uiFont) {
+            ImGui::GetStyle().ScaleAllSizes(1.25f); // paddings/spacing match the bigger font
+        } else {
+            std::cerr << "[UI] Font not found at " << fontPath << " -- using default font." << std::endl;
+        }
+    }
+
     ImGui_ImplGlfw_InitForOpenGL(window, true);
     ImGui_ImplOpenGL3_Init("#version 460"); // Use appropriate GLSL version
 }
@@ -47,34 +63,24 @@ void ImGuiUI::renderFileSelectorWindow()
     ImGui::SeparatorText("Input");
 
     if (ImGui::Button("Select file to load (.glb / .ply)")) {
-        IGFD::FileDialogConfig config;
-        config.path = ".";
-        ImGui::SetNextWindowSize(ImVec2(700, 400), ImGuiCond_Always);
-        ImGuiFileDialog::Instance()->OpenDialog("ChooseFileDlgKey", "Choose File", ".glb,.ply", config);
-    }
-
-    if (ImGuiFileDialog::Instance()->Display("ChooseFileDlgKey")) {
-        if (ImGuiFileDialog::Instance()->IsOk()) { 
-            std::string file = ImGuiFileDialog::Instance()->GetFilePathName();
-            std::string parentFolder = ImGuiFileDialog::Instance()->GetCurrentPath().append("//");
-            currentModelFormat = utils::getFileExtension(file);
+        // Native Windows Explorer dialog (blocking; returns nullopt on cancel)
+        if (auto file = nativeDialog::openModelFile()) {
+            std::string parentFolder = std::filesystem::path(*file).parent_path().string() + "/";
+            currentModelFormat = utils::getFileExtension(*file);
             switch (currentModelFormat)
             {
             case utils::ModelFileExtension::GLB:
-                meshFilePath = file;
+                meshFilePath = *file;
                 meshParentFolder = parentFolder;
                 break;
             case utils::ModelFileExtension::PLY:
-                plyFilePath = file;
+                plyFilePath = *file;
                 plyParentFolder = parentFolder;
                 break;
             case utils::ModelFileExtension::NONE:
                 break;
             }
-            
         }
-
-        ImGuiFileDialog::Instance()->Close();
     }
 
     switch (currentModelFormat)
@@ -104,26 +110,10 @@ void ImGuiUI::renderFileSelectorWindow()
     ImGui::SeparatorText("Output Folder");
 
     if (ImGui::Button("Select output folder")) {
-        IGFD::FileDialogConfig config;
-        config.path = ".";
-        ImGui::SetNextWindowSize(ImVec2(700, 400), ImGuiCond_Always);
-        ImGuiFileDialog::Instance()->OpenDialog(
-            "ChooseFolderDlgKey",          
-            "Choose Output Folder",        
-            nullptr,                       
-            config
-        );
-    }
-
-    if (ImGuiFileDialog::Instance()->Display("ChooseFolderDlgKey"))
-    {
-        if (ImGuiFileDialog::Instance()->IsOk()) {
-            std::string chosenFolder = ImGuiFileDialog::Instance()->GetCurrentPath();
-            destinationFilePathFolder = chosenFolder;
+        // Native Windows folder picker (blocking; returns nullopt on cancel)
+        if (auto folder = nativeDialog::pickFolder(L"Choose Output Folder")) {
+            destinationFilePathFolder = *folder;
         }
-
-        // Close the dialog
-        ImGuiFileDialog::Instance()->Close();
     }
 
     ImGui::SameLine();
@@ -145,6 +135,31 @@ void ImGuiUI::renderFileSelectorWindow()
         savePly = true;
     }
     ImGui::PopStyleColor(3);
+
+    ImGui::SeparatorText("Offline conversion");
+    if (!offlineRunning)
+    {
+        bool canRun = hasMeshBeenLoaded && !destinationFilePathFolder.empty();
+        if (!canRun) ImGui::BeginDisabled();
+        if (ImGui::Button("Convert to disk (offline)")) {
+            offlineConvertRequested = true;
+        }
+        if (!canRun) ImGui::EndDisabled();
+        if (!canRun)
+            ImGui::TextDisabled("Load a mesh and select an output folder first.");
+        else
+            ImGui::TextDisabled("Streams to disk in batches -- size limited by disk, not VRAM. Standard 3DGS PLY.");
+        if (!offlineStatus.empty())
+            ImGui::Text("%s", offlineStatus.c_str());  // persists Done / Failed / Cancelled
+    }
+    else
+    {
+        ImGui::ProgressBar(offlineProgress, ImVec2(-1.0f, 0.0f));
+        ImGui::Text("%s", offlineStatus.c_str());
+        if (ImGui::Button("Cancel offline conversion")) {
+            offlineCancelRequested = true;
+        }
+    }
 
     ImGui::End();
 }
@@ -218,7 +233,9 @@ void ImGuiUI::renderUI()
     renderPropertiesWindow();
     renderGpuFrametime();
     renderLightingSettings();
-    renderBatchWindow();
+    // Batch processing panel hidden (not needed for now). To restore,
+    // uncomment the next line -- the feature's code is all still here.
+    // renderBatchWindow();
 }
 
 void ImGuiUI::renderGizmoUi(glm::mat4& glmViewMat, glm::mat4& glmProjMat, glm::mat4& glmModelMat)

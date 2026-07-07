@@ -219,6 +219,26 @@ void GuiRendererConcreteMediator::update()
             notify(EventType::SavePLY);
         }
 
+        // --- Offline (chunked-to-disk) conversion: start on request, then
+        // drive exactly one batch per frame so the window keeps pumping.
+        if (imguiUI.shouldStartOfflineConversion()) {
+            imguiUI.clearOfflineConvertRequest();
+            renderer.startOfflineConversion(imguiUI.getMeshFullFilePathDestination());
+        }
+        if (renderer.isOfflineConversionRunning()) {
+            if (imguiUI.wantsOfflineCancel()) {
+                imguiUI.clearOfflineCancelRequest();
+                renderer.cancelOfflineConversion();
+            } else {
+                renderer.stepOfflineConversion();
+            }
+        }
+        imguiUI.setOfflineState(
+            renderer.isOfflineConversionRunning(),
+            renderer.getOfflineProgress(),
+            renderer.getOfflineWritten(),
+            renderer.getOfflineStatus());
+
         notify(EventType::UpdateTransforms);
     }
     
