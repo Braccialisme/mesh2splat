@@ -19,15 +19,26 @@ Division of labor — REVISED 2026-07-08 (CTO): the downstream `3dtiler/3dtiled`
 does on-the-fly content conversion and exposes an OGC 3D Tiles endpoint from
 arbitrary ALREADY-TILED inputs (SuperSplat SOG, XGRIDS LCC, Spark RAD chunks,
 MapTiler geosplats, Potree/COPC point clouds, i3s/3MX meshes...). It does NOT
-build hierarchies. **Building the LOD hierarchy is OUR job**: merge leaf
-splats upward into downsampled interior nodes, up to the root, plus
-`tileset.json`. Reference algorithms: Spark 2.0 Tiny-LoD (voxel-grid
+build hierarchies, and our manifest+PLY format is NOT among its inputs.
+**CTO decision (final): we build the full OGC 3D Tiles ourselves** — LOD
+hierarchy from our leaves (merge upward to root) AND per-node GLB content
+(KHR_gaussian_splatting; usually spz-compressed — spz_2 pending tooling),
+plus tileset.json. Reference algorithms: Spark 2.0 Tiny-LoD (voxel-grid
 bottom-up merge, training-free, fast) and Bhatt-LoD (pairwise
 Bhattacharyya-similarity merge, higher quality, offline) —
 https://www.worldlabs.ai/blog/spark-2.0 . SuperSplat build-lod is another
-reference. Open question for CTO: node content format we should emit —
-PLY per node (3dtiled converts on the fly?) or GLB KHR_gaussian_splatting
-via splat-transform on our side.
+reference; splat-transform's --decimate (pairwise merging) is a candidate
+quality upgrade for our interior-node downsampling.
+
+DONE (2026-07-08 evening): `tools/build_lod_tileset.mjs` produces the full
+tileset — interior nodes via voxel moment-matching (opacity x disc-area
+weights; mesh splats are flat discs), explicit 3D Tiles 1.1 tileset.json
+(REPLACE refinement), and with `--glb` converts every node (leaves +
+interior) to KHR_gaussian_splatting GLB via @playcanvas/splat-transform
+(npx, `-w`). Verified on the 117k site: 22 GLB nodes, all tileset URIs
+resolve. Not yet: spz_2 compression in GLB (splat-transform gap), visual
+QA, 57M-scale run, Bhatt-quality merging, implicit tiling, georef
+transform (local y-up coords for now).
 
 ## CTO decisions (recorded 2026-07-08)
 
@@ -73,7 +84,7 @@ runs on big models were impossible. Fixed:
       quadtree; default stays mesh-bbox-derived. Size snaps up to
       tileSize * 2^L; conversion refuses meshes outside the region;
       manifest gains `root_source: user-defined | mesh-bbox`.
-- [ ] Phase L — LOD builder (`tools/build_lod_tileset.py`): read manifest v2
+- [ ] Phase L — LOD builder (`tools/build_lod_tileset.mjs`): read manifest v2
       + leaf PLYs, build interior quadtree nodes bottom-up (Tiny-LoD-style
       voxel merge, moment-matched gaussian aggregation, ~4x reduction per
       level), write interior tile_L{l}_x{x}_y{y}.ply + explicit tileset.json.
