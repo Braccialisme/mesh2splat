@@ -28,6 +28,7 @@ namespace
 bool OfflineConverter::start(RenderContext& ctx,
                              const std::string& outputPath,
                              float requestedTileSize,
+                             const RootRegion& rootRegion,
                              unsigned int requestedBatchCapacity)
 {
     if (running) return false;
@@ -60,20 +61,53 @@ bool OfflineConverter::start(RenderContext& ctx,
 
     if (tiled)
     {
-        // Quadtree root: smallest square of size tileSize * 2^L covering the
-        // union XZ bbox of all meshes, origin at the bbox min corner. Leaves
-        // keep EXACTLY the requested tile size; indices become non-negative.
         glm::vec3 uMin(  1e30f ), uMax( -1e30f );
         for (auto& m : ctx.dataMeshAndGlMesh) {
             uMin = glm::min(uMin, m.first.bbox.min);
             uMax = glm::max(uMax, m.first.bbox.max);
         }
-        rootMinX = uMin.x;
-        rootMinZ = uMin.z;
-        float extent = std::max(std::max(uMax.x - uMin.x, uMax.z - uMin.z), 1e-3f);
-        leafLevel = 0;
-        rootSize  = tileSize;
-        while (rootSize < extent && leafLevel < 24) { rootSize *= 2.0f; ++leafLevel; }
+
+        rootFromUser = rootRegion.enabled;
+        if (rootFromUser)
+        {
+            // User-defined root (shared site convention). Snap the requested
+            // size UP to tileSize * 2^L so leaves keep exactly the requested
+            // tile size; refuse meshes that fall outside the region rather
+            // than silently clamping their gaussians into edge tiles.
+            if (rootRegion.size < tileSize) {
+                status = "Custom root region size must be at least the tile size.";
+                return false;
+            }
+            rootMinX  = rootRegion.minX;
+            rootMinZ  = rootRegion.minZ;
+            leafLevel = 0;
+            rootSize  = tileSize;
+            while (rootSize * (1.0f + 1e-5f) < rootRegion.size && leafLevel < 24) { rootSize *= 2.0f; ++leafLevel; }
+
+            if (uMin.x < rootMinX || uMin.z < rootMinZ ||
+                uMax.x > rootMinX + rootSize || uMax.z > rootMinZ + rootSize) {
+                std::ostringstream oss;
+                oss << std::setprecision(9)
+                    << "Custom root region does not cover the mesh. Mesh XZ bbox: ("
+                    << uMin.x << ", " << uMin.z << ") to (" << uMax.x << ", " << uMax.z
+                    << "); root region: (" << rootMinX << ", " << rootMinZ << ") size " << rootSize << ".";
+                status = oss.str();
+                return false;
+            }
+        }
+        else
+        {
+            // Derived root: smallest square of size tileSize * 2^L covering
+            // the union XZ bbox of all meshes, origin at the bbox min corner.
+            // Leaves keep EXACTLY the requested tile size; indices become
+            // non-negative.
+            rootMinX = uMin.x;
+            rootMinZ = uMin.z;
+            float extent = std::max(std::max(uMax.x - uMin.x, uMax.z - uMin.z), 1e-3f);
+            leafLevel = 0;
+            rootSize  = tileSize;
+            while (rootSize < extent && leafLevel < 24) { rootSize *= 2.0f; ++leafLevel; }
+        }
 
         // <output-without-extension>_tiles/  next to the requested output.
         std::filesystem::path p(outputPath);
@@ -338,6 +372,7 @@ bool OfflineConverter::finishAndWriteManifest()
             m << "  \"leaf_size\": " << tileSize << ",\n";
             m << "  \"root\": { \"min_x\": " << rootMinX << ", \"min_z\": " << rootMinZ
               << ", \"size\": " << rootSize << " },\n";
+            m << "  \"root_source\": \"" << (rootFromUser ? "user-defined" : "mesh-bbox") << "\",\n";
             m << "  \"grid_plane\": \"xz\",\n";
             m << "  \"grid_convention\": \"leaf (level,x,y): x in [root.min_x + x*leaf_size, +leaf_size), z likewise with y; quadtree y = world z; indices in [0, 2^level)\",\n";
             m << "  \"total_gaussians\": " << totalWritten << ",\n";

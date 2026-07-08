@@ -145,7 +145,20 @@ void ImGuiUI::renderFileSelectorWindow()
         ImGui::InputFloat("Tile size (0 = single file)", &offlineTileSize, 0.0f, 0.0f, "%.1f");
         if (offlineTileSize < 0.0f) offlineTileSize = 0.0f;
         if (offlineTileSize > 0.0f)
+        {
             ImGui::TextDisabled("Quadtree leaves: one PLY per %.0f-unit cell (level/x/y) + manifest.json, in <name>_tiles/", offlineTileSize);
+            ImGui::Checkbox("Custom root region (shared site convention)", &offlineUseCustomRoot);
+            if (offlineUseCustomRoot)
+            {
+                ImGui::SetNextItemWidth(220.0f);
+                ImGui::InputFloat2("Root origin X / Z", offlineRootOrigin, "%.2f");
+                ImGui::SetNextItemWidth(140.0f);
+                ImGui::InputFloat("Root size", &offlineRootSize, 0.0f, 0.0f, "%.1f");
+                if (offlineRootSize < 0.0f) offlineRootSize = 0.0f;
+                ImGui::TextDisabled("Same origin + size + tile size across datasets = matching tile addresses.");
+                ImGui::TextDisabled("Size snaps up to tile size x 2^L; fails if the mesh is outside the region.");
+            }
+        }
         if (ImGui::Button("Convert to disk (offline)")) {
             offlineConvertRequested = true;
         }

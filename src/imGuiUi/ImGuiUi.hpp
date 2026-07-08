@@ -84,6 +84,10 @@ public:
 
     // --- Offline (chunked-to-disk) conversion UI plumbing
     float getOfflineTileSize() const          { return offlineTileSize; }
+    bool  getOfflineUseCustomRoot() const     { return offlineUseCustomRoot; }
+    float getOfflineRootMinX() const          { return offlineRootOrigin[0]; }
+    float getOfflineRootMinZ() const          { return offlineRootOrigin[1]; }
+    float getOfflineRootSize() const          { return offlineRootSize; }
     bool shouldStartOfflineConversion() const { return offlineConvertRequested; }
     void clearOfflineConvertRequest()         { offlineConvertRequested = false; }
     bool wantsOfflineCancel() const           { return offlineCancelRequested; }
@@ -178,6 +182,9 @@ private:
 
     // Offline (chunked-to-disk) conversion state
     float offlineTileSize        = 0.0f;   // 0 = single file; >0 = XZ tile edge in world units
+    bool  offlineUseCustomRoot   = false;  // shared site convention: user-provided quadtree root
+    float offlineRootOrigin[2]   = { 0.0f, 0.0f };   // root min X / min Z (world units)
+    float offlineRootSize        = 0.0f;   // requested root edge; snapped up to tileSize * 2^L
     bool offlineConvertRequested = false;
     bool offlineCancelRequested  = false;
     bool offlineRunning          = false;

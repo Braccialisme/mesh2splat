@@ -57,12 +57,25 @@ public:
     // limits). Exceeding it fails the run with advice to raise tileSize.
     static constexpr size_t kMaxOpenTiles = 256;
 
+    // Optional user-defined quadtree root region (shared site convention):
+    // datasets converted with the same origin, size and tile size get
+    // matching (level, x, y) addresses, so their hierarchies can merge.
+    // size is snapped UP to the nearest tileSize * 2^L. When disabled, the
+    // root is derived from the mesh union bbox (per-dataset addresses).
+    struct RootRegion {
+        bool  enabled = false;
+        float minX = 0.0f;
+        float minZ = 0.0f;
+        float size = 0.0f;
+    };
+
     // Begins an offline conversion of the currently loaded mesh(es).
     // tileSize: ground-plane tile edge in world units; 0 = single file.
     // Returns false (with status set) if preconditions fail.
     bool start(RenderContext& ctx,
                const std::string& outputPath,
                float tileSize = 0.0f,
+               const RootRegion& rootRegion = {},
                unsigned int batchCapacity = kDefaultBatchCapacity);
 
     // Runs ONE batch. Call once per frame while isRunning().
@@ -115,6 +128,7 @@ private:
     float        rootMinX          = 0.0f;   // quadtree root origin (world)
     float        rootMinZ          = 0.0f;
     float        rootSize          = 0.0f;   // = tileSize * 2^L
+    bool         rootFromUser      = false;  // manifest: user-defined vs mesh-bbox
     bool         tiled             = false;
 
     std::string  outputPathStored;

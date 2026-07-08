@@ -36,8 +36,10 @@ packages each node as GLB + `KHR_gaussian_splatting`.
 
 ## Next tasks
 
-- [ ] UI: optional user-provided root region (min_x, min_z, size) for the
-      quadtree; default stays mesh-bbox-derived.
+- [x] UI: optional user-provided root region (min_x, min_z, size) for the
+      quadtree; default stays mesh-bbox-derived. Size snaps up to
+      tileSize * 2^L; conversion refuses meshes outside the region;
+      manifest gains `root_source: user-defined | mesh-bbox`.
 - [ ] Evaluate octree leaf mode (level, x, y, z addressing; manifest v3?).
 - [ ] Phase B: SplatForge/Blender ceiling measurements
       (`phaseB-splatforge-protocol.md`), then manifest-driven frustum importer.
