@@ -15,10 +15,14 @@
 // gaussian SET as one giant pass -- no seams, no duplicates. (Order within
 // files differs run-to-run: atomic-counter append follows GPU scheduling.)
 //
-// PHASE T -- TILED OUTPUT: when tileSize > 0, each batch's gaussians are
-// bucketed on the CPU by ground-plane (XZ) grid cell, cell (i,j) covering
-// x in [i*tileSize, (i+1)*tileSize), z likewise (indices may be negative;
-// boundaries sit on multiples of tileSize, so the grid is geo-alignable).
+// PHASE T -- TILED OUTPUT (QUADTREE-LEAF ADDRESSING): when tileSize > 0,
+// gaussians are bucketed into the LEAF CELLS of a quadtree over the ground
+// plane (XZ). The root is the smallest square of size tileSize * 2^L that
+// covers the model's XZ bounding box (origin at bbox min), so leaves have
+// EXACTLY the requested tile size and non-negative (level, x, y) addresses
+// with quadtree-y mapped to world Z -- the {level}/{x}/{y} convention that
+// 3D Tiles 1.1 implicit tiling consumes. mesh2splat emits leaves only;
+// interior levels / decimation / tileset packaging happen downstream.
 // One IncrementalPlyWriter per non-empty tile, created lazily, all streaming
 // simultaneously into  <output>_tiles/tile_<i>_<j>.ply,  plus a
 // manifest.json (grid scheme, per-tile bbox/count/file, georef placeholder)
@@ -103,10 +107,14 @@ private:
     // Single-file mode (tileSize == 0)
     parsers::IncrementalPlyWriter            singleWriter;
 
-    // Tiled mode
-    std::map<std::pair<int, int>, TileState> tiles;
+    // Tiled mode (quadtree leaves)
+    std::map<std::pair<int, int>, TileState> tiles;   // key = (x, y) at leafLevel
     std::string  tilesDir;         // absolute folder for tiles + manifest
-    float        tileSize          = 0.0f;
+    float        tileSize          = 0.0f;   // leaf edge, world units
+    int          leafLevel         = 0;      // L: root is 2^L x 2^L leaves
+    float        rootMinX          = 0.0f;   // quadtree root origin (world)
+    float        rootMinZ          = 0.0f;
+    float        rootSize          = 0.0f;   // = tileSize * 2^L
     bool         tiled             = false;
 
     std::string  outputPathStored;

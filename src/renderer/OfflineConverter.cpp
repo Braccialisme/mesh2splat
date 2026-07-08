@@ -60,6 +60,21 @@ bool OfflineConverter::start(RenderContext& ctx,
 
     if (tiled)
     {
+        // Quadtree root: smallest square of size tileSize * 2^L covering the
+        // union XZ bbox of all meshes, origin at the bbox min corner. Leaves
+        // keep EXACTLY the requested tile size; indices become non-negative.
+        glm::vec3 uMin(  1e30f ), uMax( -1e30f );
+        for (auto& m : ctx.dataMeshAndGlMesh) {
+            uMin = glm::min(uMin, m.first.bbox.min);
+            uMax = glm::max(uMax, m.first.bbox.max);
+        }
+        rootMinX = uMin.x;
+        rootMinZ = uMin.z;
+        float extent = std::max(std::max(uMax.x - uMin.x, uMax.z - uMin.z), 1e-3f);
+        leafLevel = 0;
+        rootSize  = tileSize;
+        while (rootSize < extent && leafLevel < 24) { rootSize *= 2.0f; ++leafLevel; }
+
         // <output-without-extension>_tiles/  next to the requested output.
         std::filesystem::path p(outputPath);
         sourceName = p.stem().string();
@@ -107,7 +122,8 @@ OfflineConverter::TileState* OfflineConverter::tileFor(int i, int j)
     }
 
     TileState& t = tiles[key];   // constructed in place (writer is not movable)
-    t.filename = "tile_" + std::to_string(i) + "_" + std::to_string(j) + ".ply";
+    t.filename = "tile_L" + std::to_string(leafLevel)
+               + "_x" + std::to_string(i) + "_y" + std::to_string(j) + ".ply";
     if (!t.writer.open(tilesDir + "/" + t.filename, scaleMultiplierStored)) {
         fail("Could not open tile file: " + t.filename);
         return nullptr;
@@ -243,13 +259,16 @@ bool OfflineConverter::step(RenderContext& ctx)
             // one pass to group, one append per touched tile.
             std::map<std::pair<int, int>, std::vector<uint32_t>> groups;
             const float invTs = 1.0f / tileSize;
+            const int   maxIdx = (1 << leafLevel) - 1;
             for (uint32_t g = 0; g < numGs; ++g)
             {
                 const auto& pos = readback[g].position;
                 int i = 0, j = 0;
                 if (std::isfinite(pos.x) && std::isfinite(pos.z)) {
-                    i = static_cast<int>(std::floor(pos.x * invTs));
-                    j = static_cast<int>(std::floor(pos.z * invTs));
+                    i = static_cast<int>(std::floor((pos.x - rootMinX) * invTs));
+                    j = static_cast<int>(std::floor((pos.z - rootMinZ) * invTs));
+                    i = std::min(std::max(i, 0), maxIdx);  // clamp: float edge cases
+                    j = std::min(std::max(j, 0), maxIdx);  // on the root boundary
                 }
                 groups[{i, j}].push_back(g);
             }
@@ -310,13 +329,17 @@ bool OfflineConverter::finishAndWriteManifest()
             std::ofstream m(tilesDir + "/manifest.json", std::ios::trunc);
             m << std::setprecision(9);
             m << "{\n";
-            m << "  \"version\": 1,\n";
-            m << "  \"generator\": \"mesh2splat OfflineConverter (tiled)\",\n";
+            m << "  \"version\": 2,\n";
+            m << "  \"scheme\": \"quadtree-leaves\",\n";
+            m << "  \"generator\": \"mesh2splat OfflineConverter (quadtree tiled)\",\n";
             m << "  \"source\": \"" << sourceName << "\",\n";
             m << "  \"gaussian_format\": \"3dgs-standard-ply\",\n";
-            m << "  \"tile_size\": " << tileSize << ",\n";
+            m << "  \"leaf_level\": " << leafLevel << ",\n";
+            m << "  \"leaf_size\": " << tileSize << ",\n";
+            m << "  \"root\": { \"min_x\": " << rootMinX << ", \"min_z\": " << rootMinZ
+              << ", \"size\": " << rootSize << " },\n";
             m << "  \"grid_plane\": \"xz\",\n";
-            m << "  \"grid_convention\": \"tile (i,j) spans x in [i*tile_size,(i+1)*tile_size), z likewise; y unbounded\",\n";
+            m << "  \"grid_convention\": \"leaf (level,x,y): x in [root.min_x + x*leaf_size, +leaf_size), z likewise with y; quadtree y = world z; indices in [0, 2^level)\",\n";
             m << "  \"total_gaussians\": " << totalWritten << ",\n";
             m << "  \"crs\": null,\n";
             m << "  \"transform\": null,\n";
@@ -325,7 +348,8 @@ bool OfflineConverter::finishAndWriteManifest()
             size_t n = 0;
             for (auto& [key, tile] : tiles)
             {
-                m << "    { \"i\": " << key.first << ", \"j\": " << key.second
+                m << "    { \"level\": " << leafLevel
+                  << ", \"x\": " << key.first << ", \"y\": " << key.second
                   << ", \"file\": \"" << tile.filename << "\""
                   << ", \"count\": " << tile.count
                   << ", \"bbox_min\": [" << tile.bboxMin.x << ", " << tile.bboxMin.y << ", " << tile.bboxMin.z << "]"

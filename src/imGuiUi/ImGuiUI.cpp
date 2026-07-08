@@ -145,7 +145,7 @@ void ImGuiUI::renderFileSelectorWindow()
         ImGui::InputFloat("Tile size (0 = single file)", &offlineTileSize, 0.0f, 0.0f, "%.1f");
         if (offlineTileSize < 0.0f) offlineTileSize = 0.0f;
         if (offlineTileSize > 0.0f)
-            ImGui::TextDisabled("Tiled: one PLY per %.0f-unit XZ cell + manifest.json, in <name>_tiles/", offlineTileSize);
+            ImGui::TextDisabled("Quadtree leaves: one PLY per %.0f-unit cell (level/x/y) + manifest.json, in <name>_tiles/", offlineTileSize);
         if (ImGui::Button("Convert to disk (offline)")) {
             offlineConvertRequested = true;
         }
