@@ -84,6 +84,13 @@ public:
 
     // --- Offline (chunked-to-disk) conversion UI plumbing
     float getOfflineTileSize() const          { return offlineTileSize; }
+    // Offline conversion resolution: same quality slider, but its own max
+    // resolution -- so cranking it never triggers a live reconversion.
+    int getOfflineResolutionTarget() const
+    {
+        return static_cast<int>(minRes + quality * (resolutionOptions[offlineResolutionIndex] - minRes));
+    }
+    void setLoadedMeshCount(size_t n)         { loadedMeshCount = n; }
     bool  getOfflineUseCustomRoot() const     { return offlineUseCustomRoot; }
     float getOfflineRootMinX() const          { return offlineRootOrigin[0]; }
     float getOfflineRootMinZ() const          { return offlineRootOrigin[1]; }
@@ -181,6 +188,8 @@ private:
     float movementSpeed = 2.0f; // camera navigation speed, exposed via Properties slider
 
     // Offline (chunked-to-disk) conversion state
+    int   offlineResolutionIndex = 0;      // index into resolutionOptions; independent of live maxRes
+    size_t loadedMeshCount       = 0;      // for the pre-run splat-count upper bound
     float offlineTileSize        = 0.0f;   // 0 = single file; >0 = XZ tile edge in world units
     bool  offlineUseCustomRoot   = false;  // shared site convention: user-provided quadtree root
     float offlineRootOrigin[2]   = { 0.0f, 0.0f };   // root min X / min Z (world units)

@@ -65,9 +65,11 @@ public:
 	// --- Offline (chunked-to-disk) conversion. Driven one batch per frame
 	// by the mediator; see OfflineConverter for the details.
 	bool startOfflineConversion(const std::string& outputPath, float tileSize,
-	                            const OfflineConverter::RootRegion& rootRegion = {}) {
-		return offlineConverter.start(renderContext, outputPath, tileSize, rootRegion);
+	                            const OfflineConverter::RootRegion& rootRegion = {},
+	                            int offlineResolution = 0) {
+		return offlineConverter.start(renderContext, outputPath, tileSize, rootRegion, offlineResolution);
 	}
+	size_t getMeshCount() const { return renderContext.dataMeshAndGlMesh.size(); }
 	void stepOfflineConversion()          { offlineConverter.step(renderContext); }
 	void cancelOfflineConversion()        { offlineConverter.cancel(); }
 	bool isOfflineConversionRunning() const     { return offlineConverter.isRunning(); }

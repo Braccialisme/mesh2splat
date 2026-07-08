@@ -228,7 +228,8 @@ void GuiRendererConcreteMediator::update()
             rootRegion.minX    = imguiUI.getOfflineRootMinX();
             rootRegion.minZ    = imguiUI.getOfflineRootMinZ();
             rootRegion.size    = imguiUI.getOfflineRootSize();
-            renderer.startOfflineConversion(imguiUI.getMeshFullFilePathDestination(), imguiUI.getOfflineTileSize(), rootRegion);
+            renderer.startOfflineConversion(imguiUI.getMeshFullFilePathDestination(), imguiUI.getOfflineTileSize(),
+                                            rootRegion, imguiUI.getOfflineResolutionTarget());
         }
         if (renderer.isOfflineConversionRunning()) {
             if (imguiUI.wantsOfflineCancel()) {
@@ -243,6 +244,7 @@ void GuiRendererConcreteMediator::update()
             renderer.getOfflineProgress(),
             renderer.getOfflineWritten(),
             renderer.getOfflineStatus());
+        imguiUI.setLoadedMeshCount(renderer.getMeshCount());
 
         notify(EventType::UpdateTransforms);
     }

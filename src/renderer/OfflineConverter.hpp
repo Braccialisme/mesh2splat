@@ -71,11 +71,15 @@ public:
 
     // Begins an offline conversion of the currently loaded mesh(es).
     // tileSize: ground-plane tile edge in world units; 0 = single file.
+    // resolutionTarget: conversion grid edge for this run; 0 = use the live
+    // view's ctx.resolutionTarget. Snapshotted at start so neither the live
+    // resolution combo nor the quality slider can affect a running export.
     // Returns false (with status set) if preconditions fail.
     bool start(RenderContext& ctx,
                const std::string& outputPath,
                float tileSize = 0.0f,
                const RootRegion& rootRegion = {},
+               int resolutionTarget = 0,
                unsigned int batchCapacity = kDefaultBatchCapacity);
 
     // Runs ONE batch. Call once per frame while isRunning().
@@ -134,6 +138,7 @@ private:
     std::string  outputPathStored;
     std::string  sourceName;
     float        scaleMultiplierStored = 1.0f;
+    int          resolutionStored      = 0;   // conversion grid edge for this run
 
     GLuint       offlineGaussianBuffer = 0;
     unsigned int batchCapacity         = 0;

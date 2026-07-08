@@ -29,6 +29,7 @@ bool OfflineConverter::start(RenderContext& ctx,
                              const std::string& outputPath,
                              float requestedTileSize,
                              const RootRegion& rootRegion,
+                             int requestedResolution,
                              unsigned int requestedBatchCapacity)
 {
     if (running) return false;
@@ -56,8 +57,11 @@ bool OfflineConverter::start(RenderContext& ctx,
     }
     if (work.empty()) { status = "Mesh has no triangles."; return false; }
 
-    // Same scale semantics as the live exporter.
-    scaleMultiplierStored = ctx.gaussianStd / static_cast<float>(ctx.resolutionTarget);
+    // Resolution enters BOTH the conversion grid and the PLY scale factor;
+    // snapshot one value here and use it for both, so this run is immune to
+    // live UI changes and the two stay consistent (scale = std / resolution).
+    resolutionStored = (requestedResolution > 0) ? requestedResolution : ctx.resolutionTarget;
+    scaleMultiplierStored = ctx.gaussianStd / static_cast<float>(resolutionStored);
 
     if (tiled)
     {
@@ -117,6 +121,25 @@ bool OfflineConverter::start(RenderContext& ctx,
         std::filesystem::create_directories(dir, ec);
         if (ec) { status = "Could not create tile folder: " + dir.string(); return false; }
         tilesDir = dir.string();
+
+        // Sweep leftovers from any previous run into this folder: a stale
+        // tile the new manifest doesn't list would still be picked up by
+        // downstream tools that glob *.ply.
+        size_t swept = 0;
+        for (auto& entry : std::filesystem::directory_iterator(dir, ec))
+        {
+            if (!entry.is_regular_file()) continue;
+            const std::string fn = entry.path().filename().string();
+            const bool isTile = fn.rfind("tile_", 0) == 0 &&
+                                entry.path().extension() == ".ply";
+            if (isTile || fn == "manifest.json") {
+                std::error_code rmEc;
+                if (std::filesystem::remove(entry.path(), rmEc)) ++swept;
+                else { status = "Could not delete stale file: " + fn; return false; }
+            }
+        }
+        if (swept > 0)
+            std::cout << "[Offline] Swept " << swept << " stale file(s) from previous run in " << tilesDir << std::endl;
         // Tile writers are created lazily in tileFor() as gaussians arrive.
     }
     else
@@ -138,7 +161,8 @@ bool OfflineConverter::start(RenderContext& ctx,
     status  = "Starting...";
     std::cout << "[Offline] Conversion started -> "
               << (tiled ? tilesDir + "  (tile size " + std::to_string(tileSize) + ")" : outputPath)
-              << "  (batch capacity " << withCommas(batchCapacity) << " gaussians, "
+              << "  (resolution " << resolutionStored
+              << ", batch capacity " << withCommas(batchCapacity) << " gaussians, "
               << withCommas(bufferSize / (1024 * 1024)) << " MB VRAM)" << std::endl;
     return true;
 }
@@ -186,13 +210,13 @@ bool OfflineConverter::step(RenderContext& ctx)
     glUtils::setUniform1i(program, "u_maxGaussians", static_cast<int>(batchCapacity));
 
     GLuint framebuffer;
-    GLuint drawBuffers = glUtils::setupFrameBuffer(framebuffer, ctx.resolutionTarget, ctx.resolutionTarget);
+    GLuint drawBuffers = glUtils::setupFrameBuffer(framebuffer, resolutionStored, resolutionStored);
     glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
 
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, offlineGaussianBuffer);
     glBindBufferBase(GL_ATOMIC_COUNTER_BUFFER, 1, ctx.atomicCounterBufferConversionPass);
 
-    glViewport(0, 0, static_cast<int>(ctx.resolutionTarget), static_cast<int>(ctx.resolutionTarget));
+    glViewport(0, 0, resolutionStored, resolutionStored);
     glDisable(GL_DEPTH_TEST);
     glEnable(GL_BLEND);
     glDisable(GL_CULL_FACE);
@@ -368,6 +392,7 @@ bool OfflineConverter::finishAndWriteManifest()
             m << "  \"generator\": \"mesh2splat OfflineConverter (quadtree tiled)\",\n";
             m << "  \"source\": \"" << sourceName << "\",\n";
             m << "  \"gaussian_format\": \"3dgs-standard-ply\",\n";
+            m << "  \"conversion_resolution\": " << resolutionStored << ",\n";
             m << "  \"leaf_level\": " << leafLevel << ",\n";
             m << "  \"leaf_size\": " << tileSize << ",\n";
             m << "  \"root\": { \"min_x\": " << rootMinX << ", \"min_z\": " << rootMinZ

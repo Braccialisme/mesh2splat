@@ -142,6 +142,16 @@ void ImGuiUI::renderFileSelectorWindow()
         bool canRun = hasMeshBeenLoaded && !destinationFilePathFolder.empty();
         if (!canRun) ImGui::BeginDisabled();
         ImGui::SetNextItemWidth(140.0f);
+        ImGui::Combo("Offline resolution", &offlineResolutionIndex, resolutionLabels, IM_ARRAYSIZE(resolutionLabels));
+        {
+            // Pre-run splat-count upper bound: the converter emits one gaussian
+            // per COVERED texel of each mesh's own UV atlas, so meshes * grid^2
+            // is a ceiling, not a prediction. 248 B/gaussian in standard PLY.
+            long long r   = static_cast<long long>(getOfflineResolutionTarget());
+            long long est = static_cast<long long>(loadedMeshCount) * r * r;
+            ImGui::TextDisabled("Up to ~%.1f M splats (%zu mesh(es) x %lld^2 texels, upper bound; actual = covered texels only), <= %.1f GB PLY",
+                est / 1e6, loadedMeshCount, r, est * 248.0 / (1024.0 * 1024.0 * 1024.0));
+        }
         ImGui::InputFloat("Tile size (0 = single file)", &offlineTileSize, 0.0f, 0.0f, "%.1f");
         if (offlineTileSize < 0.0f) offlineTileSize = 0.0f;
         if (offlineTileSize > 0.0f)
