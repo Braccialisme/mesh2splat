@@ -36,9 +36,17 @@ weights; mesh splats are flat discs), explicit 3D Tiles 1.1 tileset.json
 (REPLACE refinement), and with `--glb` converts every node (leaves +
 interior) to KHR_gaussian_splatting GLB via @playcanvas/splat-transform
 (npx, `-w`). Verified on the 117k site: 22 GLB nodes, all tileset URIs
-resolve. Not yet: spz_2 compression in GLB (splat-transform gap), visual
-QA, 57M-scale run, Bhatt-quality merging, implicit tiling, georef
-transform (local y-up coords for now).
+resolve. Scale-proven same day: 56.1M splats merged to a 1.04M interior
+node in ~108 s (sliced file I/O — Node caps single reads at 2 GiB, like
+the GL driver); interior budget defaults to min(mean leaf, 1M); nodes
+whose PLY exceeds ~1.6 GB skip GLB (32-bit container ceiling) and keep
+a PLY URI with a loud warning. Visual QA done via tools/lod_viewer.html
+(three.js point fallback; root node of the 117k site shows correct
+footprint and colors; per-level f_dc means match). PRODUCTION RULE:
+pick tile size so leaves stay under ~6M splats, then every node GLBs.
+Not yet: spz_2 compression in GLB (splat-transform gap), Bhatt-quality
+merging, implicit tiling, georef transform (local y-up coords for now),
+real splat rendering in the QA viewer (Spark CDN import URL TBD).
 
 ## CTO decisions (recorded 2026-07-08)
 

@@ -28,7 +28,10 @@
  *   node build_lod_tileset.mjs <tiles_dir> [--budget N] [--glb] [--dry-run]
  */
 
-import { readFileSync, writeFileSync, existsSync, statSync } from "node:fs";
+import {
+  readFileSync, writeFileSync, existsSync, statSync,
+  openSync, readSync, writeSync, closeSync,
+} from "node:fs";
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 
@@ -46,34 +49,62 @@ const NP = PROPS.length; // 62
 
 // ------------------------------------------------------------- PLY I/O
 
+// Node caps a single readFileSync/Buffer at 2 GiB, and our leaf tiles can
+// exceed that (57M splats = 13 GB run) -- so all PLY body I/O is sliced.
+const IO_SLICE = 1 << 28; // 256 MB
+
 function readPly(path) {
-  const buf = readFileSync(path);
-  const headEnd = buf.indexOf("end_header\n") + "end_header\n".length;
-  if (headEnd <= 0) throw new Error(`${path}: no end_header`);
-  const head = buf.subarray(0, headEnd).toString("ascii");
-  let count = null;
-  const names = [];
-  for (const ln of head.split("\n")) {
-    if (ln.startsWith("element vertex")) count = parseInt(ln.split(/\s+/)[2]);
-    else if (ln.startsWith("property")) names.push(ln.trim().split(/\s+/)[2]);
+  const fd = openSync(path, "r");
+  try {
+    const headBuf = Buffer.alloc(65536);
+    const got = readSync(fd, headBuf, 0, headBuf.length, 0);
+    const marker = headBuf.subarray(0, got).indexOf("end_header\n");
+    if (marker < 0) throw new Error(`${path}: no end_header in first 64 KB`);
+    const headEnd = marker + "end_header\n".length;
+    const head = headBuf.subarray(0, marker).toString("ascii");
+    let count = null;
+    const names = [];
+    for (const ln of head.split("\n")) {
+      if (ln.startsWith("element vertex")) count = parseInt(ln.split(/\s+/)[2]);
+      else if (ln.startsWith("property")) names.push(ln.trim().split(/\s+/)[2]);
+    }
+    if (count === null) throw new Error(`${path}: no element vertex`);
+    if (names.length !== NP || names.some((n, i) => n !== PROPS[i]))
+      throw new Error(`${path}: unexpected property layout (${names.length} props)`);
+
+    const data = new Float32Array(count * NP);
+    const totalBytes = count * NP * 4;
+    let off = 0;
+    while (off < totalBytes) {
+      const chunk = Math.min(IO_SLICE, totalBytes - off);
+      const view = new Uint8Array(data.buffer, off, chunk);
+      const n = readSync(fd, view, 0, chunk, headEnd + off);
+      if (n <= 0) throw new Error(`${path}: body too short at byte ${off}`);
+      off += n;
+    }
+    return { data, n: count };
+  } finally {
+    closeSync(fd);
   }
-  if (count === null) throw new Error(`${path}: no element vertex`);
-  if (names.length !== NP || names.some((n, i) => n !== PROPS[i]))
-    throw new Error(`${path}: unexpected property layout (${names.length} props)`);
-  const bytes = buf.subarray(headEnd);
-  if (bytes.length < count * NP * 4) throw new Error(`${path}: body too short`);
-  // Copy to an aligned buffer so we can view it as Float32Array.
-  const aligned = new Uint8Array(count * NP * 4);
-  aligned.set(bytes.subarray(0, count * NP * 4));
-  return { data: new Float32Array(aligned.buffer), n: count };
 }
 
 function writePly(path, data, n) {
   const head =
     ["ply", "format binary_little_endian 1.0", `element vertex ${n}`,
      ...PROPS.map((p) => `property float ${p}`), "end_header", ""].join("\n");
-  const body = Buffer.from(data.buffer, data.byteOffset, n * NP * 4);
-  writeFileSync(path, Buffer.concat([Buffer.from(head, "ascii"), body]));
+  const fd = openSync(path, "w");
+  try {
+    writeSync(fd, Buffer.from(head, "ascii"));
+    const totalBytes = n * NP * 4;
+    let off = 0;
+    while (off < totalBytes) {
+      const chunk = Math.min(IO_SLICE, totalBytes - off);
+      const view = new Uint8Array(data.buffer, data.byteOffset + off, chunk);
+      off += writeSync(fd, view, 0, chunk);
+    }
+  } finally {
+    closeSync(fd);
+  }
 }
 
 // ------------------------------------------------------------- splat math
@@ -379,8 +410,16 @@ function main() {
 
   const leafLevel = manifest.leaf_level;
   const leafSize = manifest.leaf_size;
-  if (budget === null)
-    budget = Math.round(manifest.tiles.reduce((s, t) => s + t.count, 0) / manifest.tiles.length);
+  if (budget === null) {
+    // Mean leaf count, capped: interior nodes are LOD approximations and
+    // must stay renderer- and GLB-friendly (GLB is a 32-bit format, ~4 GB
+    // hard ceiling; huge leaves would otherwise pass through unreduced).
+    const mean = Math.round(manifest.tiles.reduce((s, t) => s + t.count, 0) / manifest.tiles.length);
+    budget = Math.min(mean, 1_000_000);
+    if (budget < mean)
+      console.log(`note: mean leaf count ${mean.toLocaleString()} capped to ` +
+                  `budget ${budget.toLocaleString()} (override with --budget)`);
+  }
   console.log(`leaf level ${leafLevel}, ${manifest.tiles.length} leaves, ` +
               `budget ${budget.toLocaleString()} splats/interior node`);
 
@@ -448,9 +487,20 @@ function main() {
   if (toGlb) {
     const all = [...levels.values()].flatMap((m) => [...m.values()]);
     console.log(`converting ${all.length} nodes to GLB (splat-transform)...`);
+    const skipped = [];
+    // GLB is a 32-bit container; splat-transform allocates one buffer for
+    // the whole payload. Stay comfortably under it.
+    const GLB_MAX_PLY_BYTES = 1.6e9;
     for (const e of all) {
       const ply = join(tilesDir, e.file);
       const glb = ply.replace(/\.ply$/, ".glb");
+      if (statSync(ply).size > GLB_MAX_PLY_BYTES) {
+        skipped.push(e.file);
+        e.content = e.file;
+        console.log(`  SKIP ${e.file}: ${(statSync(ply).size / 1e9).toFixed(2)} GB ` +
+                    `exceeds GLB capacity -- keeping PLY content URI`);
+        continue;
+      }
       const t0 = Date.now();
       const r = spawnSync("npx", ["--yes", "@playcanvas/splat-transform", "-w", ply, glb],
                           { shell: process.platform === "win32", encoding: "utf8" });
@@ -460,6 +510,11 @@ function main() {
       console.log(`  ${e.content} (${(statSync(glb).size / 1e6).toFixed(1)} MB) ` +
                   `in ${((Date.now() - t0) / 1000).toFixed(1)}s`);
     }
+    if (skipped.length)
+      console.log(`WARNING: ${skipped.length} node(s) kept PLY content ` +
+                  `(too big for GLB): ${skipped.join(", ")}\n` +
+                  `  -> re-tile with a smaller tile size so leaves stay ` +
+                  `under ~6M splats, or lower --budget.`);
   } else {
     for (const m of levels.values())
       for (const e of m.values()) e.content = e.file;

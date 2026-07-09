@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>mesh2splat LOD QA</title>
+<style>
+  body { margin: 0; background: #111; color: #ddd; font: 13px monospace; }
+  #hud { position: fixed; top: 8px; left: 8px; z-index: 9; background: #000a; padding: 8px 10px; border-radius: 6px; }
+  select, button { font: 12px monospace; margin-right: 6px; }
+  #status { margin-top: 6px; color: #8f8; }
+</style>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/",
+  "@sparkjs/spark": "https://cdn.jsdelivr.net/npm/@sparkjs/spark/dist/spark.module.js"
+} }
+</script>
+</head>
+<body>
+<div id="hud">
+  <select id="file"></select>
+  <button id="load">load</button>
+  <span id="mode"></span>
+  <div id="status">boot...</div>
+</div>
+<script type="module">
+import * as THREE from "three";
+import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+
+const FILES = [
+  "tile_L0_x0_y0", "tile_L1_x0_y0", "tile_L1_x1_y0",
+  "tile_L2_x0_y0", "tile_L2_x1_y1", "tile_L3_x0_y0", "tile_L3_x1_y1",
+];
+const sel = document.getElementById("file");
+for (const f of FILES) sel.add(new Option(f, f));
+const status = (m) => document.getElementById("status").textContent = m;
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(innerWidth, innerHeight);
+document.body.appendChild(renderer.domElement);
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(60, innerWidth / innerHeight, 0.1, 20000);
+const controls = new OrbitControls(camera, renderer.domElement);
+
+let spark = null;
+try {
+  spark = await import("@sparkjs/spark");
+  document.getElementById("mode").textContent = "[spark splats]";
+} catch (e) {
+  document.getElementById("mode").textContent = "[three.js point fallback]";
+}
+
+let current = null;
+
+async function loadNode(name) {
+  if (current) { scene.remove(current); current = null; }
+  status("loading " + name + "...");
+  try {
+    if (spark) {
+      const mesh = new spark.SplatMesh({ url: name + ".ply" });
+      await mesh.initialized;
+      current = mesh;
+      scene.add(mesh);
+    } else {
+      const gltf = await new GLTFLoader().loadAsync(name + ".glb");
+      const psize = parseFloat(new URLSearchParams(location.search).get("size") || "2");
+      gltf.scene.traverse((o) => {
+        if (o.isPoints) o.material = new THREE.PointsMaterial({
+          vertexColors: true, size: psize, sizeAttenuation: true });
+      });
+      current = gltf.scene;
+      scene.add(current);
+    }
+    // Frame the object.
+    const box = new THREE.Box3().setFromObject(current);
+    const c = box.getCenter(new THREE.Vector3());
+    const size = box.getSize(new THREE.Vector3()).length();
+    camera.position.set(c.x + size * 0.4, c.y + size * 0.45, c.z + size * 0.4);
+    camera.near = size / 1000; camera.far = size * 10;
+    camera.updateProjectionMatrix();
+    controls.target.copy(c);
+    controls.update();
+    status(name + " OK");
+  } catch (e) {
+    status("FAIL " + name + ": " + e.message);
+  }
+}
+
+document.getElementById("load").onclick = () => loadNode(sel.value);
+addEventListener("resize", () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+renderer.setAnimationLoop(() => renderer.render(scene, camera));
+loadNode(FILES[0]);
+</script>
+</body>
+</html>
