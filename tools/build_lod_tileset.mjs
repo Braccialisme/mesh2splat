@@ -32,7 +32,7 @@ import {
   readFileSync, writeFileSync, existsSync, statSync,
   openSync, readSync, writeSync, closeSync,
 } from "node:fs";
-import { spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { join } from "node:path";
 
 // Standard 3DGS PLY property order (62 float32 per record), as written by
@@ -422,17 +422,20 @@ function bboxOf(data, n) {
   return { mn, mx };
 }
 
-function main() {
+async function main() {
   const argv = process.argv.slice(2);
   const args = argv.filter((a) => !a.startsWith("--"));
   const flags = argv.filter((a) => a.startsWith("--"));
   if (!args.length) {
-    console.log("usage: node build_lod_tileset.mjs <tiles_dir> [--budget N] [--glb] [--dry-run]");
+    console.log("usage: node build_lod_tileset.mjs <tiles_dir> [--budget N] [--glb] [--jobs N] [--dry-run]");
     process.exit(1);
   }
   const tilesDir = args[0];
   const dryRun = flags.includes("--dry-run");
   const toGlb = flags.includes("--glb");
+  let glbJobs = 4; // concurrent --glb conversions; lower if RAM/GPU-bound
+  const jIdx = argv.indexOf("--jobs");
+  if (jIdx >= 0 && argv[jIdx + 1]) glbJobs = Math.max(1, parseInt(argv[jIdx + 1], 10) || 1);
   let budget = null;
   for (const fl of flags)
     if (fl.startsWith("--budget=")) budget = parseInt(fl.split("=")[1]);
@@ -532,25 +535,51 @@ function main() {
     // GLB is a 32-bit container; splat-transform allocates one buffer for
     // the whole payload. Stay comfortably under it.
     const GLB_MAX_PLY_BYTES = 1.6e9;
+
+    // Partition: oversized nodes keep their PLY URI; the rest convert in a
+    // bounded concurrent pool (--jobs, default 4).
+    const toConv = [];
     for (const e of all) {
       const ply = join(tilesDir, e.file);
-      const glb = ply.replace(/\.ply$/, ".glb");
       if (statSync(ply).size > GLB_MAX_PLY_BYTES) {
         skipped.push(e.file);
         e.content = e.file;
         console.log(`  SKIP ${e.file}: ${(statSync(ply).size / 1e9).toFixed(2)} GB ` +
                     `exceeds GLB capacity -- keeping PLY content URI`);
-        continue;
+      } else {
+        toConv.push(e);
       }
-      const t0 = Date.now();
-      const r = spawnSync("npx", ["--yes", "@playcanvas/splat-transform", "-w", ply, glb],
-                          { shell: process.platform === "win32", encoding: "utf8" });
-      if (r.status !== 0 || !existsSync(glb))
-        throw new Error(`splat-transform failed on ${e.file}:\n${(r.stderr || "").slice(-2000)}`);
-      e.content = e.file.replace(/\.ply$/, ".glb");
-      console.log(`  ${e.content} (${(statSync(glb).size / 1e6).toFixed(1)} MB) ` +
-                  `in ${((Date.now() - t0) / 1000).toFixed(1)}s`);
     }
+
+    const q = (p) => `"${p}"`;
+    const glbFail = [];
+    let finished = 0;
+    const runGlb = (e) => new Promise((resolve) => {
+      const ply = join(tilesDir, e.file);
+      const glb = ply.replace(/\.ply$/, ".glb");
+      const t0 = Date.now();
+      const cmd = ["npx", "--yes", "@playcanvas/splat-transform", "-w", q(ply), q(glb)].join(" ");
+      const child = spawn(cmd, { shell: true });
+      let se = "";
+      child.stderr.on("data", (d) => { se += d; });
+      child.on("error", (err) => { glbFail.push(`${e.file}: ${err.message}`); resolve(); });
+      child.on("close", (code) => {
+        finished++;
+        if (code !== 0 || !existsSync(glb)) { glbFail.push(`${e.file}:\n${se.slice(-1500)}`); resolve(); return; }
+        e.content = e.file.replace(/\.ply$/, ".glb");
+        console.log(`  [${finished}/${toConv.length}] ${e.content} ` +
+                    `(${(statSync(glb).size / 1e6).toFixed(1)} MB) in ${((Date.now() - t0) / 1000).toFixed(1)}s`);
+        resolve();
+      });
+    });
+
+    let nextIdx = 0;
+    await Promise.all(Array.from({ length: Math.min(glbJobs, toConv.length) }, async () => {
+      while (nextIdx < toConv.length) { const i = nextIdx++; await runGlb(toConv[i]); }
+    }));
+    if (glbFail.length)
+      throw new Error(`splat-transform failed on ${glbFail.length} node(s):\n` + glbFail.join("\n"));
+
     if (skipped.length)
       console.log(`WARNING: ${skipped.length} node(s) kept PLY content ` +
                   `(too big for GLB): ${skipped.join(", ")}\n` +
@@ -603,4 +632,4 @@ function main() {
               `splats across ${nodes} nodes`);
 }
 
-main();
+main().catch((e) => { console.error(e.message || e); process.exit(1); });
