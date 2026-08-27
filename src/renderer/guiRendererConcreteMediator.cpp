@@ -10,7 +10,7 @@ void GuiRendererConcreteMediator::notify(EventType event)
     switch (event) {
         case EventType::LoadModel: {
             renderer.resetModelMatrices();
-            renderer.getSceneManager().loadModel(imguiUI.getMeshFilePath(), imguiUI.getMeshFilePathParentFolder());
+            renderer.getSceneManager().loadModel(imguiUI.getMeshFilePath(), imguiUI.getMeshFilePathParentFolder(), imguiUI.getMeshSplitFactor());
             renderer.gaussianBufferFromSize(imguiUI.getResolutionTarget() * imguiUI.getResolutionTarget());
             renderer.setFormatType(0); //TODO: use an enum
             renderer.setViewportResolutionForConversion(imguiUI.getResolutionTarget());
@@ -229,7 +229,8 @@ void GuiRendererConcreteMediator::update()
             rootRegion.minZ    = imguiUI.getOfflineRootMinZ();
             rootRegion.size    = imguiUI.getOfflineRootSize();
             renderer.startOfflineConversion(imguiUI.getMeshFullFilePathDestination(), imguiUI.getOfflineTileSize(),
-                                            rootRegion, imguiUI.getOfflineResolutionTarget());
+                                            rootRegion, imguiUI.getOfflineResolutionTarget(),
+                                            imguiUI.getOfflineIncludePbr());
         }
         if (renderer.isOfflineConversionRunning()) {
             if (imguiUI.wantsOfflineCancel()) {

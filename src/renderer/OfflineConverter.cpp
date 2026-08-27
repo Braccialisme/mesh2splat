@@ -30,7 +30,8 @@ bool OfflineConverter::start(RenderContext& ctx,
                              float requestedTileSize,
                              const RootRegion& rootRegion,
                              int requestedResolution,
-                             unsigned int requestedBatchCapacity)
+                             unsigned int requestedBatchCapacity,
+                             bool includePbr)
 {
     if (running) return false;
 
@@ -47,6 +48,7 @@ bool OfflineConverter::start(RenderContext& ctx,
     work.clear();
     tiles.clear();
     outputPathStored  = outputPath;
+    includePbrStored  = includePbr;
 
     for (size_t i = 0; i < ctx.dataMeshAndGlMesh.size(); ++i)
     {
@@ -145,7 +147,7 @@ bool OfflineConverter::start(RenderContext& ctx,
     else
     {
         sourceName = std::filesystem::path(outputPath).stem().string();
-        if (!singleWriter.open(outputPath, scaleMultiplierStored)) {
+        if (!singleWriter.open(outputPath, scaleMultiplierStored, includePbrStored)) {
             status = "Could not open output file: " + outputPath;
             return false;
         }
@@ -182,7 +184,7 @@ OfflineConverter::TileState* OfflineConverter::tileFor(int i, int j)
     TileState& t = tiles[key];   // constructed in place (writer is not movable)
     t.filename = "tile_L" + std::to_string(leafLevel)
                + "_x" + std::to_string(i) + "_y" + std::to_string(j) + ".ply";
-    if (!t.writer.open(tilesDir + "/" + t.filename, scaleMultiplierStored)) {
+    if (!t.writer.open(tilesDir + "/" + t.filename, scaleMultiplierStored, includePbrStored)) {
         fail("Could not open tile file: " + t.filename);
         return nullptr;
     }
@@ -391,7 +393,9 @@ bool OfflineConverter::finishAndWriteManifest()
             m << "  \"scheme\": \"quadtree-leaves\",\n";
             m << "  \"generator\": \"mesh2splat OfflineConverter (quadtree tiled)\",\n";
             m << "  \"source\": \"" << sourceName << "\",\n";
-            m << "  \"gaussian_format\": \"3dgs-standard-ply\",\n";
+            m << "  \"gaussian_format\": \"" << (includePbrStored ? "3dgs-standard-ply+pbr" : "3dgs-standard-ply") << "\",\n";
+            m << "  \"has_pbr\": " << (includePbrStored ? "true" : "false") << ",\n";
+            m << "  \"pbr_properties\": " << (includePbrStored ? "[\"metallicFactor\", \"roughnessFactor\"]" : "[]") << ",\n";
             m << "  \"conversion_resolution\": " << resolutionStored << ",\n";
             m << "  \"leaf_level\": " << leafLevel << ",\n";
             m << "  \"leaf_size\": " << tileSize << ",\n";

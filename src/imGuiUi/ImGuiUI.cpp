@@ -87,7 +87,13 @@ void ImGuiUI::renderFileSelectorWindow()
     {
     case utils::ModelFileExtension::GLB:
         ImGui::Text("Selected Glb file: %s", meshFilePath.c_str());
-        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.20f, 0.60f, 0.20f, 1.0f)); 
+        ImGui::SliderInt("Split on import (NxN)", &meshSplitFactor, 1, 8);
+        if (meshSplitFactor > 1)
+            ImGui::TextDisabled("Each mesh -> up to %dx%d=%d sub-meshes, each sampled at the full grid "
+                                "(ceiling ~%dx). Breaks the single-mesh ~grid^2 cap. Applied at load.",
+                                meshSplitFactor, meshSplitFactor, meshSplitFactor * meshSplitFactor,
+                                meshSplitFactor * meshSplitFactor);
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.20f, 0.60f, 0.20f, 1.0f));
         ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.30f, 0.75f, 0.30f, 1.0f)); 
         ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.15f, 0.50f, 0.15f, 1.0f)); 
         loadNewMesh = ImGui::Button("Convert Mesh to 3DGS");
@@ -152,6 +158,10 @@ void ImGuiUI::renderFileSelectorWindow()
             ImGui::TextDisabled("Up to ~%.1f M splats (%zu mesh(es) x %lld^2 texels, upper bound; actual = covered texels only), <= %.1f GB PLY",
                 est / 1e6, loadedMeshCount, r, est * 248.0 / (1024.0 * 1024.0 * 1024.0));
         }
+        ImGui::Checkbox("Include PBR (roughness / metallic)", &offlineIncludePbr);
+        if (offlineIncludePbr)
+            ImGui::TextDisabled("Appends metallicFactor + roughnessFactor per splat (standard viewers ignore them; +8 B/splat).");
+
         ImGui::InputFloat("Tile size (0 = single file)", &offlineTileSize, 0.0f, 0.0f, "%.1f");
         if (offlineTileSize < 0.0f) offlineTileSize = 0.0f;
         if (offlineTileSize > 0.0f)

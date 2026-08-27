@@ -19,12 +19,69 @@ SceneManager::~SceneManager() {
 }
 
 
-bool SceneManager::loadModel(const std::string& filePath, const std::string& parentFolder) {
+// Splits each mesh into an n x n grid of sub-meshes by triangle centroid on
+// the XZ plane (whole triangles, no cutting). Each sub-mesh keeps the parent's
+// material AND name -- name is the texture-map key (ConversionPass looks up by
+// name), so sub-meshes share the parent's single texture upload. The payoff:
+// the converter projects EACH mesh's own bbox into the full resolution grid
+// (converterGS: gl_Position = bbox-normalized position), so N^2 sub-meshes
+// yield up to N^2 x resolution^2 gaussians -- the way past the single-mesh
+// ~grid^2 ceiling (67M at 8192) toward hundreds of millions. Splat positions
+// stay exact world coords, so sub-mesh borders abut without seams.
+static std::vector<utils::Mesh> splitMeshesIntoGrid(const std::vector<utils::Mesh>& meshes, int n)
+{
+    if (n <= 1) return meshes;
+
+    std::vector<utils::Mesh> out;
+    for (const auto& src : meshes)
+    {
+        if (src.faces.empty()) { out.push_back(src); continue; }
+
+        float minX = FLT_MAX, minZ = FLT_MAX, maxX = -FLT_MAX, maxZ = -FLT_MAX;
+        for (const auto& f : src.faces)
+            for (int i = 0; i < 3; ++i) {
+                minX = std::min(minX, f.pos[i].x); maxX = std::max(maxX, f.pos[i].x);
+                minZ = std::min(minZ, f.pos[i].z); maxZ = std::max(maxZ, f.pos[i].z);
+            }
+        const float spanX = std::max(maxX - minX, 1e-6f);
+        const float spanZ = std::max(maxZ - minZ, 1e-6f);
+
+        std::vector<utils::Mesh> cells;
+        cells.reserve(n * n);
+        for (int c = 0; c < n * n; ++c) {
+            utils::Mesh m(src.name);          // SAME name -> shared texture
+            m.material = src.material;
+            cells.push_back(std::move(m));
+        }
+
+        for (const auto& f : src.faces) {
+            const float cx = (f.pos[0].x + f.pos[1].x + f.pos[2].x) / 3.0f;
+            const float cz = (f.pos[0].z + f.pos[1].z + f.pos[2].z) / 3.0f;
+            int ix = static_cast<int>((cx - minX) / spanX * n);
+            int iz = static_cast<int>((cz - minZ) / spanZ * n);
+            ix = std::min(std::max(ix, 0), n - 1);
+            iz = std::min(std::max(iz, 0), n - 1);
+            cells[ix * n + iz].faces.push_back(f);
+        }
+
+        for (auto& c : cells)
+            if (!c.faces.empty()) out.push_back(std::move(c));
+    }
+
+    std::cout << "[Split] " << meshes.size() << " mesh(es) -> " << out.size()
+              << " sub-mesh(es) (" << n << "x" << n << " grid per mesh)" << std::endl;
+    return out;
+}
+
+bool SceneManager::loadModel(const std::string& filePath, const std::string& parentFolder, int splitFactor) {
     std::vector<utils::Mesh> meshes;
     if (!parseGltfFile(filePath, parentFolder, meshes)) {
         std::cerr << "Failed to parse GLTF file: " << filePath << std::endl;
         return false;
     }
+
+    if (splitFactor > 1)
+        meshes = splitMeshesIntoGrid(meshes, splitFactor);
 
     //generateNormalizedUvCoordinates(meshes);
     setupMeshBuffers(meshes);
@@ -470,16 +527,22 @@ void SceneManager::setupMeshBuffers(std::vector<utils::Mesh>& meshes)
 
     renderContext.dataMeshAndGlMesh.clear();
     renderContext.dataMeshAndGlMesh.reserve(meshes.size());
+    // Fresh load: drop the previous model's texture keys and surface tally so a
+    // reload (and the shared-name texture dedup in loadTextures) starts clean.
+    renderContext.meshToTextureData.clear();
+    renderContext.totalSurfaceArea = 0;
 
     float totalSurface = 0;
-    
-    glm::vec3 minBB(FLT_MAX);
-    glm::vec3 maxBB(-FLT_MAX);
 
     for (auto& mesh : meshes) {
         utils::GLMesh glMesh;
-        std::vector<float> vertices;  
+        std::vector<float> vertices;
         float meshSurface = 0;
+        // Per-mesh bbox: the converter projects THIS mesh's bbox into the grid
+        // (converterGS u_bboxMin/Max), so it must be the mesh's own extent, not
+        // a running union across meshes. Essential for split-on-import.
+        glm::vec3 minBB(FLT_MAX);
+        glm::vec3 maxBB(-FLT_MAX);
         for (const auto& face : mesh.faces) {
             for (int i = 0; i < 3; ++i) { // Assuming each face is a triangle (and it must be as we are only reading .gltf/.glb files)
                 // Position
@@ -579,6 +642,12 @@ void SceneManager::loadTextures(const std::vector<utils::Mesh>& meshes)
 {
     for (auto& mesh : meshes)
     {
+        // Sub-meshes from split-on-import share the parent's name (the texture
+        // key). Load each unique name once -- otherwise N^2 sub-meshes reload
+        // the same source image N^2 times.
+        if (renderContext.meshToTextureData.find(mesh.name) != renderContext.meshToTextureData.end())
+            continue;
+
         std::map<std::string, utils::TextureDataGl> textureMapForThisMesh;
         //BASECOLOR ALBEDO TEXTURE LOAD
         if (mesh.material.baseColorTexture.path != EMPTY_TEXTURE)

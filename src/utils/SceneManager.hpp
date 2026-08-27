@@ -15,7 +15,7 @@ public:
     SceneManager(RenderContext& context);
     ~SceneManager();
 
-    bool loadModel(const std::string& filePath, const std::string& parentFolder);
+    bool loadModel(const std::string& filePath, const std::string& parentFolder, int splitFactor = 1);
     bool loadPly(const std::string& filePath);
     void exportPly(const std::string outputFile, unsigned int exportFormat);
 

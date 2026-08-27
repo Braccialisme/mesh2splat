@@ -37,7 +37,7 @@ import { join } from "node:path";
 
 // Standard 3DGS PLY property order (62 float32 per record), as written by
 // mesh2splat's IncrementalPlyWriter.
-const PROPS = [
+const PROPS_BASE = [
   "x", "y", "z", "nx", "ny", "nz",
   ...Array.from({ length: 3 }, (_, i) => `f_dc_${i}`),
   ...Array.from({ length: 45 }, (_, i) => `f_rest_${i}`),
@@ -45,7 +45,22 @@ const PROPS = [
   ...Array.from({ length: 3 }, (_, i) => `scale_${i}`),
   ...Array.from({ length: 4 }, (_, i) => `rot_${i}`),
 ];
-const NP = PROPS.length; // 62
+const NP_BASE = PROPS_BASE.length;             // 62
+// Optional trailing PBR floats (mesh2splat "Include PBR" export). Appended
+// AFTER the standard block, so indices 0..61 are identical either way and the
+// merge math below needs no reindexing -- only two extra averaged channels.
+const PBR_PROPS = ["metallicFactor", "roughnessFactor"];
+
+// Active layout, locked to the FIRST leaf read; every later tile must match.
+let PROPS = PROPS_BASE;
+let NP = NP_BASE;
+let HAS_PBR = false;
+let LAYOUT_LOCKED = false;
+function setLayout(hasPbr) {
+  HAS_PBR = hasPbr;
+  PROPS = hasPbr ? [...PROPS_BASE, ...PBR_PROPS] : PROPS_BASE;
+  NP = PROPS.length;                           // 62 or 64
+}
 
 // ------------------------------------------------------------- PLY I/O
 
@@ -69,8 +84,19 @@ function readPly(path) {
       else if (ln.startsWith("property")) names.push(ln.trim().split(/\s+/)[2]);
     }
     if (count === null) throw new Error(`${path}: no element vertex`);
-    if (names.length !== NP || names.some((n, i) => n !== PROPS[i]))
+
+    // Standard 62-prop layout, optionally + 2 trailing PBR floats.
+    const wantPbr = names.length === NP_BASE + PBR_PROPS.length;
+    const baseOk = names.slice(0, NP_BASE).every((n, i) => n === PROPS_BASE[i]);
+    const pbrOk = !wantPbr ||
+      (names[NP_BASE] === PBR_PROPS[0] && names[NP_BASE + 1] === PBR_PROPS[1]);
+    if ((names.length !== NP_BASE && !wantPbr) || !baseOk || !pbrOk)
       throw new Error(`${path}: unexpected property layout (${names.length} props)`);
+
+    // Lock the layout to the first tile; refuse a mixed PBR / non-PBR set.
+    if (!LAYOUT_LOCKED) { setLayout(wantPbr); LAYOUT_LOCKED = true; }
+    else if (HAS_PBR !== wantPbr)
+      throw new Error(`${path}: PBR layout differs from earlier tiles (has_pbr=${wantPbr}, expected ${HAS_PBR})`);
 
     const data = new Float32Array(count * NP);
     const totalBytes = count * NP * 4;
@@ -227,6 +253,10 @@ function mergeGroups(data, n, groupId, G) {
   const nrmSum = new Float64Array(G * 3);
   const shSum = new Float64Array(G * 48);
   const alphaSum = new Float64Array(G);
+  // PBR (optional): mass-weighted mean of metallic + roughness, same weight
+  // as color/opacity so an interior splat's material tracks the dominant leaf.
+  const metSum = HAS_PBR ? new Float64Array(G) : null;
+  const roughSum = HAS_PBR ? new Float64Array(G) : null;
   for (let i = 0; i < n; i++) {
     const g = groupId[i];
     const o = i * NP;
@@ -240,6 +270,7 @@ function mergeGroups(data, n, groupId, G) {
     nrmSum[g * 3 + 2] += m * data[o + 5];
     for (let c = 0; c < 48; c++) shSum[g * 48 + c] += m * data[o + 6 + c];
     alphaSum[g] += m * sigmoid(data[o + 54]);
+    if (HAS_PBR) { metSum[g] += m * data[o + 62]; roughSum[g] += m * data[o + 63]; }
   }
   for (let g = 0; g < G; g++) {
     mu[g * 3] /= wSum[g];
@@ -305,6 +336,10 @@ function mergeGroups(data, n, groupId, G) {
     out[o + 59] = q[1];
     out[o + 60] = q[2];
     out[o + 61] = q[3];
+    if (HAS_PBR) {
+      out[o + 62] = metSum[g] / w;
+      out[o + 63] = roughSum[g] / w;
+    }
   }
   return { data: out, n: G };
 }
@@ -487,6 +522,12 @@ function main() {
   if (toGlb) {
     const all = [...levels.values()].flatMap((m) => [...m.values()]);
     console.log(`converting ${all.length} nodes to GLB (splat-transform)...`);
+    if (HAS_PBR)
+      console.log(
+        "WARNING: PBR (metallicFactor/roughnessFactor) is NOT carried into GLB " +
+        "-- KHR_gaussian_splatting has no material channels and splat-transform " +
+        "drops unknown properties. The PBR data survives only in the .ply nodes; " +
+        "build without --glb (or consume the PLYs) to keep roughness/metallic.");
     const skipped = [];
     // GLB is a 32-bit container; splat-transform allocates one buffer for
     // the whole payload. Stay comfortably under it.

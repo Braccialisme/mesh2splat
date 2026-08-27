@@ -80,7 +80,8 @@ public:
                float tileSize = 0.0f,
                const RootRegion& rootRegion = {},
                int resolutionTarget = 0,
-               unsigned int batchCapacity = kDefaultBatchCapacity);
+               unsigned int batchCapacity = kDefaultBatchCapacity,
+               bool includePbr = false);
 
     // Runs ONE batch. Call once per frame while isRunning().
     // Returns true while more work remains; false when finished or failed.
@@ -139,6 +140,7 @@ private:
     std::string  sourceName;
     float        scaleMultiplierStored = 1.0f;
     int          resolutionStored      = 0;   // conversion grid edge for this run
+    bool         includePbrStored      = false; // append metallic/roughness props
 
     GLuint       offlineGaussianBuffer = 0;
     unsigned int batchCapacity         = 0;

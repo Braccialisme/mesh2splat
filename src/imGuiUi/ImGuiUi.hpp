@@ -84,6 +84,8 @@ public:
 
     // --- Offline (chunked-to-disk) conversion UI plumbing
     float getOfflineTileSize() const          { return offlineTileSize; }
+    bool  getOfflineIncludePbr() const        { return offlineIncludePbr; }
+    int   getMeshSplitFactor() const          { return meshSplitFactor; }
     // Offline conversion resolution: same quality slider, but its own max
     // resolution -- so cranking it never triggers a live reconversion.
     int getOfflineResolutionTarget() const
@@ -191,6 +193,8 @@ private:
     int   offlineResolutionIndex = 0;      // index into resolutionOptions; independent of live maxRes
     size_t loadedMeshCount       = 0;      // for the pre-run splat-count upper bound
     float offlineTileSize        = 0.0f;   // 0 = single file; >0 = XZ tile edge in world units
+    bool  offlineIncludePbr      = true;   // append metallicFactor + roughnessFactor floats per splat
+    int   meshSplitFactor        = 1;      // 1 = no split; N = split each mesh into NxN sub-meshes on load
     bool  offlineUseCustomRoot   = false;  // shared site convention: user-provided quadtree root
     float offlineRootOrigin[2]   = { 0.0f, 0.0f };   // root min X / min Z (world units)
     float offlineRootSize        = 0.0f;   // requested root edge; snapped up to tileSize * 2^L

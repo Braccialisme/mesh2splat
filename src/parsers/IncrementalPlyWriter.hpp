@@ -48,10 +48,15 @@ namespace parsers
 
         // Opens the file and writes the full header with a placeholder count.
         // Returns false if the file could not be opened or written.
-        bool open(const std::string& filename, float scaleMultiplier)
+        // includePbr appends two extra float properties per vertex,
+        // metallicFactor + roughnessFactor (from gaussian.pbr.x / .pbr.y),
+        // AFTER the standard 3DGS block. Standard viewers ignore trailing
+        // unknown properties; mesh2splat's loadPlyFile reads them back by name.
+        bool open(const std::string& filename, float scaleMultiplier, bool includePbr = false)
         {
             m_filename        = filename;
             m_scaleMultiplier = scaleMultiplier;
+            m_includePbr      = includePbr;
             m_writtenCount    = 0;
             m_failed          = false;
 
@@ -96,6 +101,11 @@ namespace parsers
             m_file << "property float rot_2\n";
             m_file << "property float rot_3\n";
 
+            if (m_includePbr) {
+                m_file << "property float metallicFactor\n";
+                m_file << "property float roughnessFactor\n";
+            }
+
             m_file << "end_header\n";
 
             if (!m_file.good()) { m_failed = true; return false; }
@@ -108,7 +118,8 @@ namespace parsers
         {
             if (m_failed || !m_file.is_open()) return false;
 
-            float row[62];
+            float row[64];
+            const int rowFloats = m_includePbr ? 64 : 62;
 
             for (const auto& gaussian : gaussians)
             {
@@ -158,7 +169,14 @@ namespace parsers
                 row[60] = gaussian.rotation.z;
                 row[61] = gaussian.rotation.w;
 
-                m_file.write(reinterpret_cast<const char*>(row), sizeof(row));
+                // Optional PBR: metallic (pbr.x) + roughness (pbr.y), both [0,1].
+                if (m_includePbr) {
+                    row[62] = gaussian.pbr.x; // metallicFactor
+                    row[63] = gaussian.pbr.y; // roughnessFactor
+                }
+
+                m_file.write(reinterpret_cast<const char*>(row),
+                             static_cast<std::streamsize>(rowFloats * sizeof(float)));
             }
 
             m_writtenCount += static_cast<uint64_t>(gaussians.size());
@@ -207,6 +225,7 @@ namespace parsers
         std::string       m_filename;
         std::streampos    m_countFieldOffset{};
         float             m_scaleMultiplier = 1.0f;
+        bool              m_includePbr      = false;
         uint64_t          m_writtenCount    = 0;
         bool              m_failed          = false;
     };

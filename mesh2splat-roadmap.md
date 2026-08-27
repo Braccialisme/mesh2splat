@@ -86,8 +86,79 @@ runs on big models were impossible. Fixed:
   same set size. The old ~30M practical ceiling is gone — offline splat
   budget is disk-limited only.
 
+## PBR persistence (2026-08-27)
+
+PBR was computed per-gaussian on the GPU (converterFS.glsl writes
+`pbr = vec4(metallic, roughness, 0, 1)` into `GaussianDataSSBO.pbr`) and used
+by the live relighting renderer, but every disk writer dropped it on the
+production/tiled path (`IncrementalPlyWriter` mirrored the 62-float standard
+layout). Now optional end-to-end:
+
+- `IncrementalPlyWriter::open(..., includePbr)` appends two float props,
+  `metallicFactor` + `roughnessFactor`, AFTER the standard 62-prop block →
+  64 floats / 256 B per splat. Indices 0..61 unchanged, so standard 3DGS
+  viewers ignore the trailing props and `loadPlyFile` reads them back by name.
+- `OfflineConverter` threads an `includePbr` flag into the single + per-tile
+  writers; manifest gains `has_pbr` + `pbr_properties`, and `gaussian_format`
+  becomes `3dgs-standard-ply+pbr`.
+- UI: "Include PBR (roughness / metallic)" checkbox in the offline section,
+  default ON (applies to single-file and tiled).
+- `tools/build_lod_tileset.mjs` detects the layout from the first leaf (locks
+  it, refuses a mixed set), mass-averages metallic/roughness into interior
+  nodes (same opacity×disc-area weight as color/opacity). `--glb` warns loudly
+  that KHR_gaussian_splatting has no material channels — PBR survives only in
+  the PLY nodes.
+- Python tools: `diagnose_ply.py` recognises the 64-prop PBR layout and reports
+  metallic/roughness stats; `verify_tiles.py` reads stride from each header
+  (62 or 64) so set-equality stays lossless with PBR.
+- Verified: 62-prop regression clean (existing tiles + test.ply); synthetic
+  64-prop tileset round-trips (verify TILES VALID, set-equality) and the LOD
+  builder produces a 64-prop interior node with averaged metallic/roughness in
+  [0,1]. STILL TODO: real GUI export smoke test (confirm a converted mesh with
+  a metallicRoughness texture writes 64-prop tiles the tools accept).
+
+## Split-on-import — path to 400M+ splats (2026-08-27)
+
+Single welded mesh caps at ~grid² = 67M @ 8192, because grid placement is a
+PER-MESH orthographic raster: converterGS sets gl_Position from each triangle's
+3D position projected on its dominant plane, normalized by the per-mesh bbox
+(ConversionPass sets u_bboxMin/Max from mesh.first.bbox). The UV atlas is NOT
+used for placement (xatlas path dead; only original uv, for texture sampling).
+
+Lever: "Split on import (NxN)" — `SceneManager::splitMeshesIntoGrid` buckets a
+mesh's faces by XZ centroid into N×N sub-meshes (whole triangles, no cutting),
+each with its own bbox → each sampled at the FULL grid → ceiling ~N²×resolution²
+(3×3 ≈ 600M, enough for 400M). Sub-meshes keep the parent NAME (texture-map key)
+so they share one texture upload; `loadTextures` dedups by name; setupMeshBuffers
+now computes bbox per-mesh (fixed a latent running-union bug). Splat positions
+are exact world coords → sub-mesh borders abut without seams (same as tiling).
+UI slider 1–8 in the load section; applied at load. Composes with offline PBR +
+quadtree tiling (gaussians bucket by world XZ regardless of sub-mesh).
+400M @ 256 B PBR ≈ 102 GB tiled PLY; keep leaves <6M so per-node GLB stays valid.
+STILL TODO: real GUI run at 3×3 to confirm the multiplication + a 400M end-to-end.
+
+## SOG export (2026-08-27)
+
+`tools/tiles_to_sog.mjs`: reads a tiled output folder's manifest.json and
+converts each leaf PLY to a sibling `.sog` via `@playcanvas/splat-transform`
+(v3.3.3, `.sog` is a direct output; GPU k-means compression). SOG is a compact
+WEB-delivery format (SuperSplat / Spark / PlayCanvas), NOT a 3D Tiles content
+type (that stays GLB) -- it is a parallel export of the same tiles. Flags:
+`--nodes` also converts interior LOD node PLYs, `--gpu <n|cpu>`, `--dry-run`,
+`--keep`, `--quiet`. Writes sog_manifest.json. PBR is DROPPED (SOG has no
+material channels, like GLB) -- warned; PBR survives only in the PLY.
+Proven on the 82M Aleppo run: one 27 MB / 110K-splat leaf -> 568 KB .sog
+(~2% of PLY), read the 64-prop PBR PLY fine. Full-folder batch is the delivery
+step. NOTE: current impl shells `npx` per tile (cold-start overhead ~2-3s x N);
+if batches get large, resolve the splat-transform binary once.
+
 ## Next tasks
 
+- [x] Per-tile SOG via splat-transform (`tools/tiles_to_sog.mjs`, 2026-08-27).
+- [x] Split-on-import (NxN sub-meshes) to break the single-mesh grid² ceiling
+      toward 400M+ (2026-08-27). GUI run to confirm still pending.
+- [x] PBR persistence: offline/tiled writer + LOD builder + tools carry
+      metallicFactor/roughnessFactor (2026-08-27). GUI smoke test still pending.
 - [x] UI: optional user-provided root region (min_x, min_z, size) for the
       quadtree; default stays mesh-bbox-derived. Size snaps up to
       tileSize * 2^L; conversion refuses meshes outside the region;

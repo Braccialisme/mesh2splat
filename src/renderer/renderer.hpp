@@ -66,8 +66,10 @@ public:
 	// by the mediator; see OfflineConverter for the details.
 	bool startOfflineConversion(const std::string& outputPath, float tileSize,
 	                            const OfflineConverter::RootRegion& rootRegion = {},
-	                            int offlineResolution = 0) {
-		return offlineConverter.start(renderContext, outputPath, tileSize, rootRegion, offlineResolution);
+	                            int offlineResolution = 0,
+	                            bool includePbr = false) {
+		return offlineConverter.start(renderContext, outputPath, tileSize, rootRegion, offlineResolution,
+		                              OfflineConverter::kDefaultBatchCapacity, includePbr);
 	}
 	size_t getMeshCount() const { return renderContext.dataMeshAndGlMesh.size(); }
 	void stepOfflineConversion()          { offlineConverter.step(renderContext); }
