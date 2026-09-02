@@ -8,6 +8,8 @@
 #include <limits.h>
 #endif
 #include "utils.hpp"
+#include <algorithm>
+#include <cctype>
 
 namespace utils
 {
@@ -440,9 +442,13 @@ namespace utils
             return ModelFileExtension::NONE;
 
         std::string ext = filename.substr(pos+1);
+        std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c){ return (char)std::tolower(c); });
 
         if (ext == "glb") return ModelFileExtension::GLB;
         else if (ext == "ply") return ModelFileExtension::PLY;
+        // FBX / OBJ are meshes too — route them through the GLB (mesh) path;
+        // loadModel picks the assimp parser by the real extension.
+        else if (ext == "fbx" || ext == "obj") return ModelFileExtension::GLB;
 
         return ModelFileExtension::NONE;
     }

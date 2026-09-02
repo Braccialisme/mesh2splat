@@ -61,6 +61,39 @@ below, never byte-diff.
 
 ---
 
+## Mesh input: GLB, FBX, PLY, OBJ — including RealityScan "by parts"
+
+Load a single mesh (**Select file to load**) or a whole **folder of mesh parts**
+(**Load folder of mesh parts**). Supported: **`.glb`** (glTF binary, tinygltf)
+and **`.fbx` / `.ply` / `.obj`** (via **assimp**, statically linked — no DLL).
+
+This is how a 400M-scale photogrammetry model gets in when a single GLB would
+blow glTF's ~4 GB single-buffer limit: export from RealityScan with **"Save mesh
+by parts"** (FBX binary recommended) and point mesh2splat at the folder — one
+part → its own mesh, all bucketed into the offline quadtree.
+
+- **Folder import** loads every `.glb/.fbx/.ply/.obj` in a folder as one scene. A
+  **Filename filter** loads only files whose name contains a substring — use it to
+  pick ONE LOD when a folder holds several (type e.g. `LOD0`).
+- **Textures.** Embedded textures are read directly; external textures load from
+  the file's folder. If the material has no texture link (common with
+  RealityScan), sibling `*_diffuse.*` / `*albedo*` images are matched by name.
+- **UDIM.** Multi-tile diffuse (`..._diffuse.1001.jpg`, `.1002`, …) is supported:
+  the mesh is split by UV tile, UVs remapped to `[0,1]`, each tile textured.
+- **Split on import (N×N)** subdivides each mesh into N×N sub-meshes at load, so
+  each is sampled at the full resolution grid — raises the per-mesh splat ceiling.
+- A new load **replaces** the previous scene (single mesh at a time; use the
+  folder importer to combine parts).
+
+Single `.ply` still loads as a **Gaussian-splat** file (viewer); a mesh `.ply`
+goes through the folder importer (it treats `.ply` as a mesh).
+
+Caveat: parts load all at once (their textures resident together) — fine for
+moderate counts; hundreds of parts with big/UDIM textures can exceed VRAM
+(sequential per-part conversion is the planned fix for that scale).
+
+---
+
 ## Fixes over upstream
 
 - **Portable shader loading.** Shaders load relative to the exe (upstream baked
@@ -93,6 +126,9 @@ below, never byte-diff.
 - Custom UI font (VG5000, `fonts/` next to the exe; falls back to default),
   movement-speed slider, graceful shader-load failure, tunable sort cap
   (`MAX_GAUSSIANS_TO_SORT`).
+- **In-app Log window** — captures `cout`/`cerr` (there is no console): import
+  diagnostics (materials, textures, UDIM tiles), tile counts, warnings.
+  Text is selectable and has a **Copy all** button.
 
 ---
 
@@ -121,7 +157,8 @@ mapped, or UNC path.
 
 ## Usage
 
-1. Load a `.glb` / `.ply`, tune **Sampling density** and **Max quality tweak**
+1. Load a mesh (`.glb` / `.fbx` / `.obj`) or a **folder of parts**, tune
+   **Sampling density** and **Max quality tweak**
    in the live view (watch the VRAM readout — the resolution grid is
    `16 + quality × (maxRes − 16)`, and gaussian count ≈ grid² per mesh/UV atlas).
 2. Pick the output folder and filename, format "PLY Standard Format".

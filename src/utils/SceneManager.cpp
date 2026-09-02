@@ -7,6 +7,15 @@
 #include <iostream>
 #include <cstring>
 #include <functional>
+#include <filesystem>
+#include <algorithm>
+#include <map>
+#include <cmath>
+#include <cctype>
+#include <assimp/Importer.hpp>
+#include <assimp/scene.h>
+#include <assimp/postprocess.h>
+#include <assimp/material.h>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/quaternion.hpp>
 
@@ -73,10 +82,283 @@ static std::vector<utils::Mesh> splitMeshesIntoGrid(const std::vector<utils::Mes
     return out;
 }
 
+// Fills a TextureInfo (in-memory pixels) from an assimp material texture slot,
+// handling both embedded textures (path "*N" -> scene->mTextures) and external
+// files (loaded from baseDir). Same in-memory format the GLB path produces.
+static void loadAssimpTexture(const aiScene* scene, const aiMaterial* mat, aiTextureType type,
+                              const std::string& baseDir, utils::TextureInfo& out)
+{
+    aiString texPath;
+    if (mat->GetTexture(type, 0, &texPath) != AI_SUCCESS) return;
+    std::string p = texPath.C_Str();
+    std::cout << "  [tex] type " << (int)type << " path=\"" << p << "\""
+              << (p.size() && p[0]=='*' ? " (embedded)" : " (external)") << std::endl;
+    int w = 0, h = 0, c = 0;
+    unsigned char* data = nullptr;
+
+    if (!p.empty() && p[0] == '*') {                       // embedded texture
+        int idx = std::atoi(p.c_str() + 1);
+        if (idx >= 0 && idx < static_cast<int>(scene->mNumTextures)) {
+            const aiTexture* tex = scene->mTextures[idx];
+            if (tex->mHeight == 0) {                        // compressed (png/jpg bytes)
+                data = stbi_load_from_memory(reinterpret_cast<const unsigned char*>(tex->pcData),
+                                             static_cast<int>(tex->mWidth), &w, &h, &c, 0);
+            } else {                                        // raw aiTexel (BGRA)
+                w = tex->mWidth; h = tex->mHeight; c = 4;
+                out.texture.resize(static_cast<size_t>(w) * h * 4);
+                for (size_t i = 0; i < static_cast<size_t>(w) * h; ++i) {
+                    const aiTexel& t = tex->pcData[i];
+                    out.texture[i*4+0] = t.r; out.texture[i*4+1] = t.g;
+                    out.texture[i*4+2] = t.b; out.texture[i*4+3] = t.a;
+                }
+                out.width = w; out.height = h; out.channels = 4; out.path = "embedded";
+                return;
+            }
+        }
+    } else {                                               // external file
+        std::string full = p;
+        if (!baseDir.empty() && !std::filesystem::path(p).is_absolute())
+            full = baseDir + "/" + p;
+        data = stbi_load(full.c_str(), &w, &h, &c, 0);
+        if (!data) {                                       // RS sometimes writes absolute/old paths: retry basename in baseDir
+            std::string bn = std::filesystem::path(p).filename().string();
+            data = stbi_load((baseDir + "/" + bn).c_str(), &w, &h, &c, 0);
+        }
+    }
+
+    if (data) {
+        out.texture.assign(data, data + static_cast<size_t>(w) * h * c);
+        out.width = w; out.height = h; out.channels = c; out.path = "assimp";
+        stbi_image_free(data);
+        std::cout << "        loaded " << w << "x" << h << " (" << c << " ch)" << std::endl;
+    } else if (out.texture.empty()) {
+        std::cout << "        FAILED to load texture (missing file / unreadable)" << std::endl;
+    }
+}
+
+// Loads an external image file into a TextureInfo (in-memory pixels).
+static bool loadTextureFile(const std::string& fullPath, utils::TextureInfo& out)
+{
+    int w = 0, h = 0, c = 0;
+    unsigned char* data = stbi_load(fullPath.c_str(), &w, &h, &c, 0);
+    if (!data) return false;
+    out.texture.assign(data, data + static_cast<size_t>(w) * h * c);
+    out.width = w; out.height = h; out.channels = c; out.path = fullPath;
+    stbi_image_free(data);
+    return true;
+}
+
+// UDIM: build the per-tile filename from the pattern assimp reported. Handles a
+// literal "<UDIM>" token, or a 4-digit UDIM number (1001-1100) between dots.
+static std::string udimFilename(const std::string& pattern, int udim)
+{
+    std::string s = pattern;
+    size_t pos = s.find("<UDIM>");
+    if (pos != std::string::npos) { s.replace(pos, 6, std::to_string(udim)); return s; }
+    // replace ".NNNN." where NNNN starts with 1 (UDIM tiles are 1001+)
+    for (size_t i = 1; i + 5 < s.size(); ++i) {
+        if (s[i-1] == '.' && s[i] == '1' && s[i+4] == '.' &&
+            std::isdigit((unsigned char)s[i+1]) && std::isdigit((unsigned char)s[i+2]) && std::isdigit((unsigned char)s[i+3])) {
+            s.replace(i, 4, std::to_string(udim));
+            return s;
+        }
+    }
+    return s;
+}
+
+// RealityScan often exports the mesh material WITHOUT a texture link -- the
+// diffuse images just sit next to the file (e.g. "Name_diffuse.1001.jpg"). When
+// the material carries no diffuse, find those files by name and return a
+// filename pattern (with "<UDIM>" when tiled) to use as the diffuse source.
+static std::string findDiffuseInFolder(const std::string& baseDir, const std::string& fileStem, bool& isUdimOut)
+{
+    namespace fs = std::filesystem;
+    isUdimOut = false;
+    auto tolow = [](std::string s){ std::transform(s.begin(), s.end(), s.begin(),
+                    [](unsigned char c){ return (char)std::tolower(c); }); return s; };
+
+    // Strip a trailing LOD marker so "Name_LOD4" matches "Name_diffuse.*".
+    std::string stem = fileStem, low = tolow(fileStem);
+    size_t lp = low.rfind("_lod");
+    if (lp == std::string::npos) lp = low.rfind(".lod");
+    if (lp != std::string::npos) stem = stem.substr(0, lp);
+    std::string steml = tolow(stem);
+
+    auto isImg = [&](const std::string& e){ std::string x = tolow(e);
+        return x==".jpg"||x==".jpeg"||x==".png"||x==".tif"||x==".tiff"||x==".bmp"; };
+    auto isDiffuse = [&](const std::string& n){ std::string x = tolow(n);
+        return x.find("diffuse")!=std::string::npos || x.find("albedo")!=std::string::npos ||
+               x.find("basecolor")!=std::string::npos || x.find("base_color")!=std::string::npos; };
+
+    std::error_code ec;
+    std::vector<std::string> diffuse, stemMatch;
+    for (const auto& e : fs::directory_iterator(baseDir, ec)) {
+        if (!e.is_regular_file() || !isImg(e.path().extension().string())) continue;
+        std::string fn = e.path().filename().string();
+        if (isDiffuse(fn)) diffuse.push_back(fn);
+        else if (!steml.empty() && tolow(fn).rfind(steml, 0) == 0) stemMatch.push_back(fn);
+    }
+    std::vector<std::string>& cands = !diffuse.empty() ? diffuse : stemMatch;
+    if (cands.empty()) return "";
+    std::sort(cands.begin(), cands.end());
+
+    // Turn a ".NNNN." UDIM token in the first candidate into "<UDIM>".
+    std::string pat = cands.front();
+    for (size_t i = 1; i + 5 < pat.size(); ++i) {
+        if (pat[i-1]=='.' && pat[i]=='1' && pat[i+4]=='.' &&
+            std::isdigit((unsigned char)pat[i+1]) && std::isdigit((unsigned char)pat[i+2]) && std::isdigit((unsigned char)pat[i+3])) {
+            pat.replace(i, 4, "<UDIM>"); isUdimOut = true; break;
+        }
+    }
+    std::cout << "  [diffuse-in-folder] using \"" << pat << "\""
+              << (isUdimOut ? " (UDIM)" : "") << " from " << cands.size() << " candidate file(s)" << std::endl;
+    return pat;
+}
+
+// Loads a mesh file (FBX / PLY / OBJ) via assimp into utils::Mesh(es), matching
+// the format parseGltfFile produces (per-triangle Face with pos/uv/normal/tangent
+// + material textures). This is how RealityScan "by parts" (FBX/PLY) gets in.
+// UDIM diffuse textures (multiple 1001/1002/... tiles) are split: faces are
+// grouped by UV tile, UVs remapped to [0,1], and each group gets its tile image.
+bool SceneManager::parseMeshFileAssimp(const std::string& path, std::vector<utils::Mesh>& meshes)
+{
+    Assimp::Importer importer;
+    const aiScene* scene = importer.ReadFile(path,
+        aiProcess_Triangulate | aiProcess_GenSmoothNormals | aiProcess_CalcTangentSpace |
+        aiProcess_JoinIdenticalVertices | aiProcess_FlipUVs | aiProcess_PreTransformVertices);
+    if (!scene || (scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE) || !scene->mRootNode) {
+        std::cerr << "assimp load failed (" << path << "): " << importer.GetErrorString() << std::endl;
+        return false;
+    }
+    const std::string baseDir = std::filesystem::path(path).parent_path().string();
+    std::cout << "[assimp] " << std::filesystem::path(path).filename().string() << ": "
+              << scene->mNumMeshes << " mesh(es), " << scene->mNumMaterials << " material(s), "
+              << scene->mNumTextures << " embedded texture(s)"
+              << (scene->mNumTextures == 0 ? "  (textures external or none)" : "") << std::endl;
+
+    // Fallback diffuse pattern from sibling files, used when a material has no
+    // texture link (common with RealityScan FBX/PLY exports).
+    bool folderIsUdim = false;
+    const std::string folderDiffusePattern =
+        findDiffuseInFolder(baseDir, std::filesystem::path(path).stem().string(), folderIsUdim);
+
+    for (unsigned mi = 0; mi < scene->mNumMeshes; ++mi) {
+        const aiMesh* am = scene->mMeshes[mi];
+        if (!am->HasPositions() || am->mNumFaces == 0) continue;
+
+        const std::string baseName = am->mName.length ? std::string(am->mName.C_Str())
+                                                      : ("mesh_" + std::to_string(mi));
+
+        // --- material (shared across this mesh's UDIM tiles) ---
+        utils::MaterialGltf material;          // normal/metallic + factor; base color set per tile
+        std::string diffusePattern;            // external diffuse path pattern (may contain <UDIM>)
+        bool diffuseEmbedded = false;
+        const aiMaterial* mat = (am->mMaterialIndex < scene->mNumMaterials)
+                              ? scene->mMaterials[am->mMaterialIndex] : nullptr;
+        if (mat) {
+            aiString ap;
+            if (mat->GetTexture(aiTextureType_BASE_COLOR, 0, &ap) == AI_SUCCESS) diffusePattern = ap.C_Str();
+            else if (mat->GetTexture(aiTextureType_DIFFUSE, 0, &ap) == AI_SUCCESS) diffusePattern = ap.C_Str();
+            diffuseEmbedded = (!diffusePattern.empty() && diffusePattern[0] == '*');
+            loadAssimpTexture(scene, mat, aiTextureType_NORMALS,  baseDir, material.normalTexture);
+            loadAssimpTexture(scene, mat, aiTextureType_METALNESS, baseDir, material.metallicRoughnessTexture);
+            aiColor4D col;
+            if (aiGetMaterialColor(mat, AI_MATKEY_COLOR_DIFFUSE, &col) == AI_SUCCESS)
+                material.baseColorFactor = glm::vec4(col.r, col.g, col.b, col.a);
+        }
+        // No texture in the material? Use the sibling files found in the folder.
+        if (diffusePattern.empty() && !diffuseEmbedded && !folderDiffusePattern.empty())
+            diffusePattern = folderDiffusePattern;
+
+        const bool hasUV = am->HasTextureCoords(0);
+        const bool hasN  = am->HasNormals();
+        const bool hasT  = am->HasTangentsAndBitangents();
+
+        // --- detect UDIM (multiple tiles): <UDIM> token, or UVs beyond [0,1) ---
+        bool isUdim = false;
+        if (hasUV && !diffusePattern.empty() && !diffuseEmbedded) {
+            if (diffusePattern.find("<UDIM>") != std::string::npos) isUdim = true;
+            else for (unsigned i = 0; i < am->mNumVertices && !isUdim; ++i)
+                if (am->mTextureCoords[0][i].x >= 1.0f || am->mTextureCoords[0][i].y >= 1.0f) isUdim = true;
+        }
+
+        // --- group faces by UDIM tile (single group when not UDIM), remap UVs ---
+        std::map<int, std::vector<utils::Face>> tileFaces;  // key = UDIM number
+        for (unsigned fi = 0; fi < am->mNumFaces; ++fi) {
+            const aiFace& f = am->mFaces[fi];
+            if (f.mNumIndices != 3) continue;
+            int tileU = 0, tileV = 0;
+            if (isUdim) {
+                const aiVector3D& t0 = am->mTextureCoords[0][f.mIndices[0]];
+                tileU = std::max(0, (int)std::floor(t0.x));
+                tileV = std::max(0, (int)std::floor(t0.y));
+            }
+            const int udim = 1001 + tileU + 10 * tileV;
+            utils::Face face{};
+            for (int k = 0; k < 3; ++k) {
+                unsigned idx = f.mIndices[k];
+                const aiVector3D& v = am->mVertices[idx];
+                face.pos[k] = glm::vec3(v.x, v.y, v.z);
+                if (hasUV) { const aiVector3D& t = am->mTextureCoords[0][idx];
+                             face.uv[k] = glm::vec2(t.x - tileU, t.y - tileV); }   // -> [0,1]
+                else       face.uv[k] = glm::vec2(0.0f);
+                if (hasN)  { const aiVector3D& n = am->mNormals[idx]; face.normal[k] = glm::vec3(n.x, n.y, n.z); }
+                else       face.normal[k] = glm::vec3(0.0f, 1.0f, 0.0f);
+                if (hasT)  { const aiVector3D& t = am->mTangents[idx]; face.tangent[k] = glm::vec4(t.x, t.y, t.z, 1.0f); }
+                else       face.tangent[k] = glm::vec4(1.0f, 0.0f, 0.0f, 1.0f);
+            }
+            tileFaces[udim].push_back(face);
+        }
+
+        // --- one sub-mesh per tile, each with its own base-color texture ---
+        for (auto& kv : tileFaces) {
+            const int udim = kv.first;
+            utils::Mesh mesh(isUdim ? (baseName + "_udim" + std::to_string(udim)) : baseName);
+            mesh.material = material;
+
+            if (diffuseEmbedded && mat) {
+                loadAssimpTexture(scene, mat, aiTextureType_BASE_COLOR, baseDir, mesh.material.baseColorTexture);
+                if (mesh.material.baseColorTexture.texture.empty())
+                    loadAssimpTexture(scene, mat, aiTextureType_DIFFUSE, baseDir, mesh.material.baseColorTexture);
+            } else if (!diffusePattern.empty()) {
+                std::string fn   = isUdim ? udimFilename(diffusePattern, udim) : diffusePattern;
+                std::string full = std::filesystem::path(fn).is_absolute() ? fn : (baseDir + "/" + fn);
+                if (!loadTextureFile(full, mesh.material.baseColorTexture))
+                    loadTextureFile(baseDir + "/" + std::filesystem::path(fn).filename().string(),
+                                    mesh.material.baseColorTexture);
+            }
+
+            if (mesh.material.baseColorTexture.texture.empty())
+                std::cout << "  [warn] '" << mesh.name << "': no base-color texture -> WHITE "
+                          << (diffusePattern.empty() ? "(no diffuse in material)"
+                                                     : ("(tried " + (isUdim ? udimFilename(diffusePattern, udim) : diffusePattern) + ")"))
+                          << std::endl;
+            else if (isUdim)
+                std::cout << "  [udim] tile " << udim << ": " << kv.second.size() << " faces, tex "
+                          << mesh.material.baseColorTexture.width << "x" << mesh.material.baseColorTexture.height << std::endl;
+
+            mesh.faces = std::move(kv.second);
+            if (!mesh.faces.empty()) meshes.push_back(std::move(mesh));
+        }
+    }
+    return true;
+}
+
+// Route a mesh file to the right parser: GLB via tinygltf, everything else
+// (FBX / PLY-mesh / OBJ) via assimp.
+static bool lowerExtIs(const std::string& path, const char* ext) {
+    std::string e = std::filesystem::path(path).extension().string();
+    std::transform(e.begin(), e.end(), e.begin(), [](unsigned char c){ return (char)std::tolower(c); });
+    return e == ext;
+}
+
 bool SceneManager::loadModel(const std::string& filePath, const std::string& parentFolder, int splitFactor) {
     std::vector<utils::Mesh> meshes;
-    if (!parseGltfFile(filePath, parentFolder, meshes)) {
-        std::cerr << "Failed to parse GLTF file: " << filePath << std::endl;
+    const bool ok = lowerExtIs(filePath, ".glb")
+                    ? parseGltfFile(filePath, parentFolder, meshes)
+                    : parseMeshFileAssimp(filePath, meshes);
+    if (!ok) {
+        std::cerr << "Failed to parse mesh file: " << filePath << std::endl;
         return false;
     }
 
@@ -88,6 +370,73 @@ bool SceneManager::loadModel(const std::string& filePath, const std::string& par
     loadTextures(meshes);
     glUtils::generateTextures(renderContext.meshToTextureData);
 
+    return true;
+}
+
+bool SceneManager::loadModelFolder(const std::string& folderPath, int splitFactor,
+                                   const std::string& nameFilter) {
+    namespace fs = std::filesystem;
+    std::vector<utils::Mesh> allMeshes;
+    int parts = 0;
+
+    std::error_code ec;
+    if (!fs::is_directory(folderPath, ec)) {
+        std::cerr << "loadModelFolder: not a folder: " << folderPath << std::endl;
+        return false;
+    }
+
+    // Deterministic order so tiling/addresses are reproducible across runs.
+    // Accept any supported mesh part format (RealityScan "by parts").
+    auto isMeshPart = [](const fs::path& p) {
+        std::string e = p.extension().string();
+        std::transform(e.begin(), e.end(), e.begin(), [](unsigned char c){ return (char)std::tolower(c); });
+        return e == ".glb" || e == ".ply" || e == ".fbx" || e == ".obj";
+    };
+    std::vector<fs::path> partFiles;
+    for (const auto& entry : fs::directory_iterator(folderPath, ec)) {
+        if (!entry.is_regular_file() || !isMeshPart(entry.path())) continue;
+        // Filename filter: pick one LOD when a folder holds several per part.
+        if (!nameFilter.empty() &&
+            entry.path().filename().string().find(nameFilter) == std::string::npos) continue;
+        partFiles.push_back(entry.path());
+    }
+    std::sort(partFiles.begin(), partFiles.end());
+    if (!nameFilter.empty())
+        std::cout << "[Folder] filter \"" << nameFilter << "\" -> " << partFiles.size()
+                  << " file(s) match" << std::endl;
+
+    const std::string parentFolder = folderPath + "/";
+    for (const auto& file : partFiles) {
+        std::vector<utils::Mesh> partMeshes;
+        const bool ok = lowerExtIs(file.string(), ".glb")
+                        ? parseGltfFile(file.string(), parentFolder, partMeshes)
+                        : parseMeshFileAssimp(file.string(), partMeshes);
+        if (!ok) {
+            std::cerr << "  skipped (parse failed): " << file.filename().string() << std::endl;
+            continue;
+        }
+        // Prefix each part's mesh names so textures (keyed by mesh name) from
+        // different parts never collide in loadTextures' dedup.
+        const std::string prefix = file.stem().string() + "::";
+        for (auto& m : partMeshes) m.name = prefix + m.name;
+        for (auto& m : partMeshes) allMeshes.push_back(std::move(m));
+        ++parts;
+    }
+
+    if (allMeshes.empty()) {
+        std::cerr << "loadModelFolder: no loadable .glb parts in " << folderPath << std::endl;
+        return false;
+    }
+
+    if (splitFactor > 1)
+        allMeshes = splitMeshesIntoGrid(allMeshes, splitFactor);
+
+    std::cout << "[Folder] loaded " << parts << " GLB part(s) -> " << allMeshes.size()
+              << " mesh(es) total from " << folderPath << std::endl;
+
+    setupMeshBuffers(allMeshes);
+    loadTextures(allMeshes);
+    glUtils::generateTextures(renderContext.meshToTextureData);
     return true;
 }
 

@@ -7,8 +7,10 @@
 #include "renderer/renderer.hpp"
 #include "glewGlfwHandlers/glewGlfwHandler.hpp"
 #include "renderer/guiRendererConcreteMediator.hpp"
+#include "utils/Logger.hpp"
 
 int main(int argc, char** argv) {
+    utils::initLog();   // capture cout/cerr into the in-app Log window
     GlewGlfwHandler glewGlfwHandler(glm::ivec2(1080, 720), "Mesh2Splat");
     
     Camera camera(

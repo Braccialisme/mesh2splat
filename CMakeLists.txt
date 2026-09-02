@@ -67,6 +67,26 @@ else()
     set_source_files_properties(${THIRD_PARTY_SOURCES} PROPERTIES COMPILE_FLAGS "-w")
 endif()
 
+# ---- assimp (FBX / PLY / OBJ mesh import for RealityScan parts) ------------
+# Fetched + built as a static lib, importers trimmed to what we need. First
+# configure downloads + builds it (a few minutes); cached afterwards.
+include(FetchContent)
+set(ASSIMP_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(ASSIMP_BUILD_ASSIMP_TOOLS OFF CACHE BOOL "" FORCE)
+set(ASSIMP_INSTALL OFF CACHE BOOL "" FORCE)
+set(ASSIMP_WARNINGS_AS_ERRORS OFF CACHE BOOL "" FORCE)
+set(ASSIMP_BUILD_ALL_IMPORTERS_BY_DEFAULT OFF CACHE BOOL "" FORCE)
+set(ASSIMP_BUILD_ALL_EXPORTERS_BY_DEFAULT OFF CACHE BOOL "" FORCE)
+set(ASSIMP_NO_EXPORT ON CACHE BOOL "" FORCE)
+set(ASSIMP_BUILD_FBX_IMPORTER ON CACHE BOOL "" FORCE)
+set(ASSIMP_BUILD_PLY_IMPORTER ON CACHE BOOL "" FORCE)
+set(ASSIMP_BUILD_OBJ_IMPORTER ON CACHE BOOL "" FORCE)
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(assimp
+    GIT_REPOSITORY https://github.com/assimp/assimp.git
+    GIT_TAG        v5.4.3)
+FetchContent_MakeAvailable(assimp)
+
 add_executable(Mesh2Splat ${SOURCES})
 
 target_compile_definitions(Mesh2Splat PRIVATE GLEW_STATIC)
@@ -98,12 +118,13 @@ if(MSVC)
 endif()
 
 if (WIN32)
-    target_link_libraries(Mesh2Splat 
-        ${GLFW_DIR}/lib-vc2022/glfw3.lib 
-        ${GLEW_DIR}/lib/Release/x64/glew32s.lib 
-        opengl32)
+    target_link_libraries(Mesh2Splat
+        ${GLFW_DIR}/lib-vc2022/glfw3.lib
+        ${GLEW_DIR}/lib/Release/x64/glew32s.lib
+        opengl32
+        assimp)
 else()
-    target_link_libraries(Mesh2Splat glfw GLEW GL X11 Xrandr Xinerama Xcursor Xi Xxf86vm pthread dl) #todo
+    target_link_libraries(Mesh2Splat glfw GLEW GL X11 Xrandr Xinerama Xcursor Xi Xxf86vm pthread dl assimp) #todo
 endif()
 
 set_target_properties(Mesh2Splat PROPERTIES 

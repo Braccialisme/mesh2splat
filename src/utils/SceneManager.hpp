@@ -16,6 +16,14 @@ public:
     ~SceneManager();
 
     bool loadModel(const std::string& filePath, const std::string& parentFolder, int splitFactor = 1);
+    // Loads every .glb in a folder (RealityScan "save mesh by parts" output) as
+    // ONE combined scene, appending all parts' meshes. Each part keeps its own
+    // material/texture (names are prefixed per part so textures don't collide).
+    // The offline tiler then buckets all parts into the world quadtree.
+    bool loadModelFolder(const std::string& folderPath, int splitFactor = 1,
+                         const std::string& nameFilter = "");
+    // FBX / PLY / OBJ mesh import via assimp (RealityScan parts that aren't GLB).
+    bool parseMeshFileAssimp(const std::string& path, std::vector<utils::Mesh>& meshes);
     bool loadPly(const std::string& filePath);
     void exportPly(const std::string outputFile, unsigned int exportFormat);
 

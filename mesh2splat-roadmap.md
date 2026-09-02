@@ -152,8 +152,40 @@ Proven on the 82M Aleppo run: one 27 MB / 110K-splat leaf -> 568 KB .sog
 step. NOTE: current impl shells `npx` per tile (cold-start overhead ~2-3s x N);
 if batches get large, resolve the splat-transform binary once.
 
+## Folder-of-GLB-parts import — path to 400M input (2026-09-01)
+
+RealityScan can't export a 400M-scale mesh as one file (GLB ~4 GB single-buffer
+cap; glTF-separate .bin also uint32-capped; PLY/FBX/ABC = new heavy loaders +
+huge single RAM load + PLY often lacks UV+texture). Solution: RS **"Save mesh by
+parts"** → folder of small GLB parts (each geometry+UV+texture, well under the
+limit), reusing RS's own spatial cut. STAGE 1 shipped: `SceneManager::
+loadModelFolder(folder, splitFactor)` enumerates *.glb (sorted), parses each,
+prefixes mesh names per part (textures keyed by name don't collide), appends all
+into one scene, setupMeshBuffers + loadTextures once. UI button "Load folder of
+GLB parts (RealityScan)" (nativeDialog::pickFolder existed); EventType::
+LoadModelFolder mirrors LoadModel. Offline tiler buckets all parts into the world
+quadtree. Composes with split-on-import + offline PBR.
+LIMIT: Stage 1 loads ALL parts at once → all textures in VRAM together; may
+exceed VRAM for hundreds of parts (true 400M). STAGE 2 (TODO): process parts
+one-at-a-time into a shared tiled output (tile writers persist across parts) →
+bounded VRAM, any scale.
+
+FORMATS (2026-09-01): RS GLB-by-parts CRASHES (RS GLB exporter buggy at scale).
+Added **assimp** (FetchContent v5.4.3, static, FBX+PLY+OBJ importers only) →
+`SceneManager::parseMeshFileAssimp` fills utils::Mesh (pos/uv/normal/tangent +
+material textures, embedded via scene->mTextures or external via stb_image, same
+in-memory format as the GLB path). Routing: .glb → tinygltf, .fbx/.ply/.obj →
+assimp — in both loadModel (single) and loadModelFolder (per part). getFileExt
+maps fbx/obj → GLB(mesh) path; single .ply stays SPLAT (mesh PLY goes via the
+folder importer, which treats .ply as mesh). Best RS export = **FBX binary,
+embed textures** (self-contained like GLB, no 4 GB cap). Orientation: assimp may
+bring FBX in Z-up; use the (viewer) transform / note if tiling looks vertical.
+
 ## Next tasks
 
+- [x] Folder-of-GLB-parts import Stage 1 (2026-09-01). GUI test + Stage 2 pending.
+- [ ] Stage 2: sequential per-part offline conversion into one shared tiled
+      output (tile writers persist across parts) — the real 400M path.
 - [x] Per-tile SOG via splat-transform (`tools/tiles_to_sog.mjs`, 2026-08-27).
 - [x] Split-on-import (NxN sub-meshes) to break the single-mesh grid² ceiling
       toward 400M+ (2026-08-27). GUI run to confirm still pending.

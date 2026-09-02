@@ -105,8 +105,9 @@ namespace nativeDialog
     inline std::optional<std::string> openModelFile()
     {
         std::vector<COMDLG_FILTERSPEC> filters = {
-            { L"3D models (*.glb, *.ply)", L"*.glb;*.ply" },
+            { L"3D models (*.glb, *.fbx, *.obj, *.ply)", L"*.glb;*.fbx;*.obj;*.ply" },
             { L"glTF binary (*.glb)",      L"*.glb"       },
+            { L"FBX / OBJ mesh",           L"*.fbx;*.obj" },
             { L"Gaussian splat (*.ply)",   L"*.ply"       },
             { L"All files (*.*)",          L"*.*"         },
         };

@@ -5,6 +5,7 @@
 
 #include "ImGuiUi.hpp"
 #include "utils/glUtils.hpp"
+#include "utils/Logger.hpp"
 #include "NativeFileDialog.hpp"
 #include <iostream>
 
@@ -62,7 +63,7 @@ void ImGuiUI::renderFileSelectorWindow()
 
     ImGui::SeparatorText("Input");
 
-    if (ImGui::Button("Select file to load (.glb / .ply)")) {
+    if (ImGui::Button("Select file to load (.glb / .fbx / .obj / .ply)")) {
         // Native Windows Explorer dialog (blocking; returns nullopt on cancel)
         if (auto file = nativeDialog::openModelFile()) {
             std::string parentFolder = std::filesystem::path(*file).parent_path().string() + "/";
@@ -83,10 +84,33 @@ void ImGuiUI::renderFileSelectorWindow()
         }
     }
 
+    // RealityScan "save mesh by parts" -> a folder of mesh parts. Import them all
+    // as one scene; the offline tiler then buckets the parts into the quadtree.
+    // The filename filter picks ONE LOD when the folder holds several per part.
+    ImGui::SetNextItemWidth(160.0f);
+    ImGui::InputText("Filename filter", meshFolderFilter, IM_ARRAYSIZE(meshFolderFilter));
+    ImGui::SameLine(); ImGui::TextDisabled("(?)");
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Only load files whose name contains this text.\n"
+                          "Use it to pick ONE LOD when a folder has several\n"
+                          "(e.g. type  LOD0  or  L0 ). Empty = load every file.");
+    if (ImGui::Button("Load folder of mesh parts (GLB / PLY / FBX / OBJ)")) {
+        if (auto folder = nativeDialog::pickFolder(L"Choose folder of mesh parts (RealityScan)")) {
+            meshFolderPath = *folder;
+            currentModelFormat = utils::ModelFileExtension::GLB;
+            meshFilePath.clear();
+            loadFolderRequested = true;
+        }
+    }
+    if (!meshFolderPath.empty())
+        ImGui::TextDisabled("Parts folder: %s%s", meshFolderPath.c_str(),
+                            meshFolderFilter[0] ? (std::string("   |  filter: ") + meshFolderFilter).c_str() : "");
+
     switch (currentModelFormat)
     {
     case utils::ModelFileExtension::GLB:
-        ImGui::Text("Selected Glb file: %s", meshFilePath.c_str());
+        if (!meshFilePath.empty())
+            ImGui::Text("Selected Glb file: %s", meshFilePath.c_str());
         ImGui::SliderInt("Split on import (NxN)", &meshSplitFactor, 1, 8);
         if (meshSplitFactor > 1)
             ImGui::TextDisabled("Each mesh -> up to %dx%d=%d sub-meshes, each sampled at the full grid "
@@ -265,12 +289,29 @@ void ImGuiUI::renderPropertiesWindow()
 }
 
 
+void ImGuiUI::renderLogWindow()
+{
+    ImGui::Begin("Log");
+    std::string t = utils::logText();
+    if (ImGui::Button("Clear")) utils::clearLog();
+    ImGui::SameLine();
+    if (ImGui::Button("Copy all")) ImGui::SetClipboardText(t.c_str());
+    ImGui::SameLine();
+    ImGui::TextDisabled("(cout / cerr -- select text to copy, or 'Copy all')");
+    ImGui::Separator();
+    // Read-only multiline = drag-selectable + Ctrl+C. Fills the window.
+    ImGui::InputTextMultiline("##log", const_cast<char*>(t.c_str()), t.size() + 1,
+                              ImVec2(-1.0f, -1.0f), ImGuiInputTextFlags_ReadOnly);
+    ImGui::End();
+}
+
 void ImGuiUI::renderUI()
 {
     renderFileSelectorWindow();
     renderPropertiesWindow();
     renderGpuFrametime();
     renderLightingSettings();
+    renderLogWindow();
     // Batch processing panel hidden (not needed for now). To restore,
     // uncomment the next line -- the feature's code is all still here.
     // renderBatchWindow();

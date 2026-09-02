@@ -7,6 +7,7 @@
 
 enum class EventType {
     LoadModel,
+    LoadModelFolder,
     LoadPly,
     ViewDepth,
     RunConversion,

@@ -27,6 +27,23 @@ void GuiRendererConcreteMediator::notify(EventType event)
             imguiUI.setPlyLoaded(false); //need to reset this
             break;
         }
+        case EventType::LoadModelFolder: {
+            renderer.resetModelMatrices();
+            if (renderer.getSceneManager().loadModelFolder(imguiUI.getMeshFolderPath(), imguiUI.getMeshSplitFactor(), imguiUI.getMeshFolderFilter())) {
+                renderer.gaussianBufferFromSize(imguiUI.getResolutionTarget() * imguiUI.getResolutionTarget());
+                renderer.setFormatType(0);
+                renderer.setViewportResolutionForConversion(imguiUI.getResolutionTarget());
+
+                renderer.enableRenderPass(conversionPassName);
+                renderer.enableRenderPass(gaussiansPrePassName);
+                renderer.enableRenderPass(radixSortPassName);
+                renderer.enableRenderPass(gaussianSplattingPassName);
+
+                imguiUI.setMeshLoaded(true);
+                imguiUI.setPlyLoaded(false);
+            }
+            break;
+        }
         case EventType::LoadPly: {
             if (renderer.getSceneManager().loadPly(imguiUI.getPlyFilePath()))
             {
@@ -201,6 +218,11 @@ void GuiRendererConcreteMediator::update()
 
         if (imguiUI.shouldLoadNewMesh() && !imguiUI.getMeshFilePath().empty()) {
             notify(EventType::LoadModel);
+        }
+
+        if (imguiUI.shouldLoadFolder()) {
+            imguiUI.clearLoadFolderRequest();
+            notify(EventType::LoadModelFolder);
         }
 
         if (imguiUI.shouldLoadPly() && !imguiUI.getPlyFilePath().empty()) {

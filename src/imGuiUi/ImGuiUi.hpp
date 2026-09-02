@@ -71,6 +71,7 @@ public:
     void renderPropertiesWindow();
     void renderGpuFrametime();
     void renderLightingSettings();
+    void renderLogWindow();
     float getLightIntensity() const;
     glm::vec3 getLightColor() const;
     
@@ -86,6 +87,10 @@ public:
     float getOfflineTileSize() const          { return offlineTileSize; }
     bool  getOfflineIncludePbr() const        { return offlineIncludePbr; }
     int   getMeshSplitFactor() const          { return meshSplitFactor; }
+    std::string getMeshFolderPath() const     { return meshFolderPath; }
+    std::string getMeshFolderFilter() const   { return meshFolderFilter; }
+    bool  shouldLoadFolder() const            { return loadFolderRequested; }
+    void  clearLoadFolderRequest()            { loadFolderRequested = false; }
     // Offline conversion resolution: same quality slider, but its own max
     // resolution -- so cranking it never triggers a live reconversion.
     int getOfflineResolutionTarget() const
@@ -195,6 +200,9 @@ private:
     float offlineTileSize        = 0.0f;   // 0 = single file; >0 = XZ tile edge in world units
     bool  offlineIncludePbr      = true;   // append metallicFactor + roughnessFactor floats per splat
     int   meshSplitFactor        = 1;      // 1 = no split; N = split each mesh into NxN sub-meshes on load
+    std::string meshFolderPath;            // folder of mesh parts (RealityScan) to import
+    char  meshFolderFilter[64]   = "";     // only load files whose name contains this (pick one LOD)
+    bool  loadFolderRequested    = false;  // set when the folder-import button is clicked
     bool  offlineUseCustomRoot   = false;  // shared site convention: user-provided quadtree root
     float offlineRootOrigin[2]   = { 0.0f, 0.0f };   // root min X / min Z (world units)
     float offlineRootSize        = 0.0f;   // requested root edge; snapped up to tileSize * 2^L
