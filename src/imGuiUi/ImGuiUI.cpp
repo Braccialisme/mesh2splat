@@ -7,7 +7,15 @@
 #include "utils/glUtils.hpp"
 #include "utils/Logger.hpp"
 #include "NativeFileDialog.hpp"
+#include "json.hpp"
 #include <iostream>
+#include <fstream>
+#include <cstdio>
+#include <algorithm>
+
+// Header sniff (defined in parsers.cpp) -- tells a Gaussian-splat PLY from a
+// mesh PLY without pulling the heavy parsers headers into this TU.
+namespace parsers { bool plyIsGaussianSplat(const std::string&); }
 
 ImGuiUI::ImGuiUI(float defaultGaussianStd, float defaultMesh2SPlatQuality)
     : resolutionIndex(0),
@@ -61,6 +69,24 @@ void ImGuiUI::renderFileSelectorWindow()
 
     ImGui::Begin("File Selector");
 
+    // --- Project (save/restore the whole session) ---------------------------
+    ImGui::SeparatorText("Project");
+    if (ImGui::Button("Save project...")) {
+        if (auto p = nativeDialog::saveProjectFile(L"mesh2splat.m2sproj"))
+            saveProjectTo(*p);
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Load project...")) {
+        if (auto p = nativeDialog::openProjectFile())
+            loadProjectFrom(*p);
+    }
+    ImGui::SameLine(); ImGui::TextDisabled("(?)");
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Save/restore all paths + settings (source file/folder, filter,\n"
+                          "split, quality, tile size, root region, output folder/name).\n"
+                          "Load also RE-IMPORTS the saved source, so you can resume the\n"
+                          "pipeline after a crash without re-picking a huge mesh.");
+
     ImGui::SeparatorText("Input");
 
     if (ImGui::Button("Select file to load (.glb / .fbx / .obj / .ply)")) {
@@ -75,8 +101,20 @@ void ImGuiUI::renderFileSelectorWindow()
                 meshParentFolder = parentFolder;
                 break;
             case utils::ModelFileExtension::PLY:
-                plyFilePath = *file;
-                plyParentFolder = parentFolder;
+                // A .ply can be EITHER a Gaussian-splat file (viewer) or a mesh
+                // (RealityScan export -> convert). Sniff the header to decide.
+                if (parsers::plyIsGaussianSplat(*file)) {
+                    plyFilePath = *file;
+                    plyParentFolder = parentFolder;
+                } else {
+                    // Mesh PLY -> route through the mesh/convert path (loadModel
+                    // sends .ply to the native happly mesh loader, not assimp).
+                    meshFilePath = *file;
+                    meshParentFolder = parentFolder;
+                    plyFilePath.clear();
+                    currentModelFormat = utils::ModelFileExtension::GLB; // show mesh UI branch
+                    std::cout << "[input] mesh PLY detected -> convert path: " << *file << std::endl;
+                }
                 break;
             case utils::ModelFileExtension::NONE:
                 break;
@@ -224,6 +262,117 @@ void ImGuiUI::renderFileSelectorWindow()
     }
 
     ImGui::End();
+}
+
+// ---------------------------------------------------------------------------
+// Save / Load project (.m2sproj = JSON). Captures everything the user set up
+// so the pipeline can resume after a crash without re-picking the source or
+// re-typing sliders. Load restores the fields and asks the mediator to
+// re-import the saved source (single file, parts folder, or ply).
+// ---------------------------------------------------------------------------
+void ImGuiUI::saveProjectTo(const std::string& path)
+{
+    nlohmann::json j;
+    j["m2sproj"] = 2; // format version
+    j["input"] = {
+        {"meshFilePath",       meshFilePath},
+        {"meshParentFolder",   meshParentFolder},
+        {"plyFilePath",        plyFilePath},
+        {"plyParentFolder",    plyParentFolder},
+        {"meshFolderPath",     meshFolderPath},
+        {"meshFolderFilter",   std::string(meshFolderFilter)},
+        {"meshSplitFactor",    meshSplitFactor},
+        {"currentModelFormat", static_cast<int>(currentModelFormat)},
+    };
+    j["output"] = {
+        {"destinationFilePathFolder", destinationFilePathFolder},
+        {"outputFilename",            std::string(outputFilename)},
+        {"formatIndex",               formatIndex},
+    };
+    j["quality"] = {
+        {"gaussian_std",    gaussian_std},
+        {"quality",         quality},
+        {"resolutionIndex", resolutionIndex},
+        {"movementSpeed",   movementSpeed},
+    };
+    j["offline"] = {
+        {"offlineResolutionIndex", offlineResolutionIndex},
+        {"offlineIncludePbr",      offlineIncludePbr},
+        {"offlineTileSize",        offlineTileSize},
+        {"offlineUseCustomRoot",   offlineUseCustomRoot},
+        {"offlineRootOriginX",     offlineRootOrigin[0]},
+        {"offlineRootOriginZ",     offlineRootOrigin[1]},
+        {"offlineRootSize",        offlineRootSize},
+    };
+
+    std::ofstream os(path);
+    if (!os) { std::cerr << "[project] cannot write " << path << std::endl; return; }
+    os << j.dump(2);
+    std::cout << "[project] saved -> " << path << std::endl;
+}
+
+void ImGuiUI::loadProjectFrom(const std::string& path)
+{
+    std::ifstream is(path);
+    if (!is) { std::cerr << "[project] cannot open " << path << std::endl; return; }
+
+    nlohmann::json j;
+    try { is >> j; }
+    catch (const std::exception& e) { std::cerr << "[project] parse error: " << e.what() << std::endl; return; }
+
+    auto str = [](const nlohmann::json& o, const char* k, const std::string& def = "") {
+        return (o.contains(k) && o[k].is_string()) ? o[k].get<std::string>() : def;
+    };
+    auto setBuf = [](char* dst, size_t n, const std::string& s) { std::snprintf(dst, n, "%s", s.c_str()); };
+
+    if (j.contains("input")) {
+        const auto& in = j["input"];
+        meshFilePath     = str(in, "meshFilePath");
+        meshParentFolder = str(in, "meshParentFolder");
+        plyFilePath      = str(in, "plyFilePath");
+        plyParentFolder  = str(in, "plyParentFolder");
+        meshFolderPath   = str(in, "meshFolderPath");
+        setBuf(meshFolderFilter, sizeof(meshFolderFilter), str(in, "meshFolderFilter"));
+        if (in.contains("meshSplitFactor"))    meshSplitFactor    = in["meshSplitFactor"].get<int>();
+        if (in.contains("currentModelFormat")) currentModelFormat = static_cast<utils::ModelFileExtension>(in["currentModelFormat"].get<int>());
+    }
+    if (j.contains("output")) {
+        const auto& o = j["output"];
+        destinationFilePathFolder = str(o, "destinationFilePathFolder");
+        setBuf(outputFilename, sizeof(outputFilename), str(o, "outputFilename", "DefaultFilename.ply"));
+        if (o.contains("formatIndex")) formatIndex = o["formatIndex"].get<int>();
+    }
+    if (j.contains("quality")) {
+        const auto& q = j["quality"];
+        if (q.contains("gaussian_std"))    gaussian_std  = q["gaussian_std"].get<float>();
+        if (q.contains("quality"))         quality       = q["quality"].get<float>();
+        if (q.contains("movementSpeed"))   movementSpeed = q["movementSpeed"].get<float>();
+        if (q.contains("resolutionIndex")) {
+            resolutionIndex = std::clamp(q["resolutionIndex"].get<int>(), 0, 3);
+            maxRes = resolutionOptions[resolutionIndex];
+        }
+    }
+    if (j.contains("offline")) {
+        const auto& of = j["offline"];
+        if (of.contains("offlineResolutionIndex")) offlineResolutionIndex = std::clamp(of["offlineResolutionIndex"].get<int>(), 0, 3);
+        if (of.contains("offlineIncludePbr"))      offlineIncludePbr      = of["offlineIncludePbr"].get<bool>();
+        if (of.contains("offlineTileSize"))        offlineTileSize        = of["offlineTileSize"].get<float>();
+        if (of.contains("offlineUseCustomRoot"))   offlineUseCustomRoot   = of["offlineUseCustomRoot"].get<bool>();
+        if (of.contains("offlineRootOriginX"))     offlineRootOrigin[0]   = of["offlineRootOriginX"].get<float>();
+        if (of.contains("offlineRootOriginZ"))     offlineRootOrigin[1]   = of["offlineRootOriginZ"].get<float>();
+        if (of.contains("offlineRootSize"))        offlineRootSize        = of["offlineRootSize"].get<float>();
+    }
+
+    std::cout << "[project] loaded <- " << path << std::endl;
+
+    // Ask the mediator to re-import the saved source (persistent flag, so it is
+    // not clobbered by the per-frame button assignment of loadNewMesh/loadNewPly).
+    if (!meshFolderPath.empty() || !meshFilePath.empty() || !plyFilePath.empty()) {
+        projectReimportRequested = true;
+        std::cout << "[project] re-importing source on next frame..." << std::endl;
+    } else {
+        std::cout << "[project] no source path stored -- settings restored only." << std::endl;
+    }
 }
 
 void ImGuiUI::renderPropertiesWindow()

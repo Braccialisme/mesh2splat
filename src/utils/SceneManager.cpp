@@ -153,6 +153,16 @@ static bool loadTextureFile(const std::string& fullPath, utils::TextureInfo& out
 static std::string udimFilename(const std::string& pattern, int udim)
 {
     std::string s = pattern;
+    // RealityScan "_u<col>_v<row>_" naming (1-based tiles). Decode udim back to
+    // tiles: udim = 1001 + uTile + 10*vTile -> column = uTile+1, row = vTile+1.
+    if (s.find("<U>") != std::string::npos || s.find("<V>") != std::string::npos) {
+        const int uTile = (udim - 1001) % 10;
+        const int vTile = (udim - 1001) / 10;
+        size_t p;
+        while ((p = s.find("<U>")) != std::string::npos) s.replace(p, 3, std::to_string(uTile + 1));
+        while ((p = s.find("<V>")) != std::string::npos) s.replace(p, 3, std::to_string(vTile + 1));
+        return s;
+    }
     size_t pos = s.find("<UDIM>");
     if (pos != std::string::npos) { s.replace(pos, 6, std::to_string(udim)); return s; }
     // replace ".NNNN." where NNNN starts with 1 (UDIM tiles are 1001+)
@@ -164,6 +174,25 @@ static std::string udimFilename(const std::string& pattern, int udim)
         }
     }
     return s;
+}
+
+// Turn a "_u<N>_v<M>_" RealityScan UDIM marker into "_u<U>_v<M>..._v<V>" tokens
+// so udimFilename can substitute per tile. Returns true if it rewrote s.
+static bool tokenizeUvUdim(std::string& s)
+{
+    for (size_t i = 0; i + 4 < s.size(); ++i) {
+        if (s[i] == '_' && (s[i+1]=='u'||s[i+1]=='U') && std::isdigit((unsigned char)s[i+2])) {
+            size_t j = i + 2; while (j < s.size() && std::isdigit((unsigned char)s[j])) ++j;
+            if (j + 2 < s.size() && s[j]=='_' && (s[j+1]=='v'||s[j+1]=='V') && std::isdigit((unsigned char)s[j+2])) {
+                size_t k = j + 2; while (k < s.size() && std::isdigit((unsigned char)s[k])) ++k;
+                // replace the v-digits first (later in string) then the u-digits
+                s.replace(j + 2, k - (j + 2), "<V>");
+                s.replace(i + 2, j - (i + 2), "<U>");
+                return true;
+            }
+        }
+    }
+    return false;
 }
 
 // RealityScan often exports the mesh material WITHOUT a texture link -- the
@@ -202,14 +231,17 @@ static std::string findDiffuseInFolder(const std::string& baseDir, const std::st
     if (cands.empty()) return "";
     std::sort(cands.begin(), cands.end());
 
-    // Turn a ".NNNN." UDIM token in the first candidate into "<UDIM>".
+    // Turn a UDIM token in the first candidate into a substitutable pattern:
+    // ".NNNN." (Mari/standard) -> "<UDIM>", or "_uN_vM_" (RealityScan) -> tokens.
     std::string pat = cands.front();
+    bool tokenized = false;
     for (size_t i = 1; i + 5 < pat.size(); ++i) {
         if (pat[i-1]=='.' && pat[i]=='1' && pat[i+4]=='.' &&
             std::isdigit((unsigned char)pat[i+1]) && std::isdigit((unsigned char)pat[i+2]) && std::isdigit((unsigned char)pat[i+3])) {
-            pat.replace(i, 4, "<UDIM>"); isUdimOut = true; break;
+            pat.replace(i, 4, "<UDIM>"); isUdimOut = true; tokenized = true; break;
         }
     }
+    if (!tokenized && cands.size() > 1 && tokenizeUvUdim(pat)) isUdimOut = true;
     std::cout << "  [diffuse-in-folder] using \"" << pat << "\""
               << (isUdimOut ? " (UDIM)" : "") << " from " << cands.size() << " candidate file(s)" << std::endl;
     return pat;
@@ -344,8 +376,121 @@ bool SceneManager::parseMeshFileAssimp(const std::string& path, std::vector<util
     return true;
 }
 
-// Route a mesh file to the right parser: GLB via tinygltf, everything else
-// (FBX / PLY-mesh / OBJ) via assimp.
+// Binary mesh PLY via happly (no assimp). Mirrors parseMeshFileAssimp's UDIM /
+// diffuse-in-folder texturing, but sources geometry from happly's compact
+// arrays -- so it fits a 180M-face mesh in RAM that assimp cannot import.
+bool SceneManager::parseMeshPly(const std::string& path, std::vector<utils::Mesh>& meshes)
+{
+    parsers::MeshPlyRaw raw;
+    if (!parsers::readMeshPlyGeometry(path, raw)) {
+        std::cerr << "[ply-mesh] no usable geometry in " << path << std::endl;
+        return false;
+    }
+    const size_t nV = raw.x.size();
+    const size_t nF = raw.faces.size();
+
+    // Recenter: GNSS / geo meshes carry huge global coordinates (e.g. ~1e7) that
+    // wreck float32 precision in the shader and make every splat viewer unable to
+    // render the output (splats sit millions of units from the origin). Subtract
+    // a floored origin so positions sit near 0. Logged so the offset can be added
+    // back for georeferencing. Only applied when coords are actually large.
+    double oxD = raw.x[0], oyD = raw.y[0], ozD = raw.z[0];
+    for (size_t i = 1; i < nV; ++i) {
+        oxD = std::min(oxD, (double)raw.x[i]);
+        oyD = std::min(oyD, (double)raw.y[i]);
+        ozD = std::min(ozD, (double)raw.z[i]);
+    }
+    const bool recenter = (std::fabs(oxD) > 1e4 || std::fabs(oyD) > 1e4 || std::fabs(ozD) > 1e4);
+    const float subX = recenter ? (float)std::floor(oxD) : 0.0f;
+    const float subY = recenter ? (float)std::floor(oyD) : 0.0f;
+    const float subZ = recenter ? (float)std::floor(ozD) : 0.0f;
+    if (recenter)
+        std::cout << "[ply-mesh] recentering by origin (" << (double)subX << ", " << (double)subY
+                  << ", " << (double)subZ << ") -- add back to georeference." << std::endl;
+
+    const std::string baseDir  = std::filesystem::path(path).parent_path().string();
+    const std::string baseName = std::filesystem::path(path).stem().string();
+
+    // Diffuse pattern from sibling files (RealityScan PLY has no texture link).
+    bool folderIsUdim = false;
+    std::string diffusePattern = findDiffuseInFolder(baseDir, baseName, folderIsUdim);
+
+    // UDIM if the pattern is tiled, or any UV lands outside [0,1).
+    bool isUdim = false;
+    if (raw.hasUV && !diffusePattern.empty()) {
+        if (diffusePattern.find("<UDIM>") != std::string::npos) isUdim = true;
+        else for (size_t i = 0; i < nV && !isUdim; ++i)
+            if (raw.s[i] >= 1.0f || raw.t[i] >= 1.0f) isUdim = true;
+    }
+
+    // Group faces by UDIM tile (single group when not UDIM), remap UV to [0,1].
+    std::map<int, std::vector<utils::Face>> tileFaces;
+    for (size_t fi = 0; fi < nF; ++fi) {
+        const std::vector<int>& f = raw.faces[fi];
+        if (f.size() != 3) continue;
+        if (f[0] < 0 || f[1] < 0 || f[2] < 0 ||
+            (size_t)f[0] >= nV || (size_t)f[1] >= nV || (size_t)f[2] >= nV) continue;
+
+        int tileU = 0, tileV = 0;
+        if (isUdim && raw.hasUV) {
+            tileU = std::max(0, (int)std::floor(raw.s[f[0]]));
+            tileV = std::max(0, (int)std::floor(raw.t[f[0]]));
+        }
+        const int udim = 1001 + tileU + 10 * tileV;
+
+        // Mesh PLY carries no normals -> flat face normal (converter recomputes
+        // its own splat orientation anyway; this only feeds the output normal).
+        const glm::vec3 p0(raw.x[f[0]], raw.y[f[0]], raw.z[f[0]]);
+        const glm::vec3 p1(raw.x[f[1]], raw.y[f[1]], raw.z[f[1]]);
+        const glm::vec3 p2(raw.x[f[2]], raw.y[f[2]], raw.z[f[2]]);
+        glm::vec3 fn = glm::cross(p1 - p0, p2 - p0);
+        float fl = glm::length(fn);
+        fn = (fl > 0.0f) ? fn / fl : glm::vec3(0.0f, 1.0f, 0.0f);
+
+        utils::Face face{};
+        for (int k = 0; k < 3; ++k) {
+            const int idx = f[k];
+            face.pos[k]    = glm::vec3(raw.x[idx] - subX, raw.y[idx] - subY, raw.z[idx] - subZ);
+            face.uv[k]     = raw.hasUV ? glm::vec2(raw.s[idx] - tileU, raw.t[idx] - tileV)
+                                       : glm::vec2(0.0f);
+            face.normal[k] = fn;
+            face.tangent[k]= glm::vec4(1.0f, 0.0f, 0.0f, 1.0f);
+            if (raw.hasColor) face.color[k] = glm::vec3(raw.r[idx], raw.g[idx], raw.b[idx]);
+        }
+        tileFaces[udim].push_back(face);
+    }
+    // Free the big happly arrays before we hold the face-soup + textures.
+    raw.faces.clear(); raw.faces.shrink_to_fit();
+
+    for (auto& kv : tileFaces) {
+        const int udim = kv.first;
+        utils::Mesh mesh(isUdim ? (baseName + "_udim" + std::to_string(udim)) : baseName);
+
+        if (!diffusePattern.empty()) {
+            std::string fn   = isUdim ? udimFilename(diffusePattern, udim) : diffusePattern;
+            std::string full = std::filesystem::path(fn).is_absolute() ? fn : (baseDir + "/" + fn);
+            if (!loadTextureFile(full, mesh.material.baseColorTexture))
+                loadTextureFile(baseDir + "/" + std::filesystem::path(fn).filename().string(),
+                                mesh.material.baseColorTexture);
+        }
+
+        if (mesh.material.baseColorTexture.texture.empty())
+            std::cout << "  [warn] '" << mesh.name << "': no base-color texture -> WHITE "
+                      << (diffusePattern.empty() ? "(no diffuse found in folder)"
+                                                 : ("(tried " + (isUdim ? udimFilename(diffusePattern, udim) : diffusePattern) + ")"))
+                      << std::endl;
+        else if (isUdim)
+            std::cout << "  [udim] tile " << udim << ": " << kv.second.size() << " faces, tex "
+                      << mesh.material.baseColorTexture.width << "x" << mesh.material.baseColorTexture.height << std::endl;
+
+        mesh.faces = std::move(kv.second);
+        if (!mesh.faces.empty()) meshes.push_back(std::move(mesh));
+    }
+    return !meshes.empty();
+}
+
+// Route a mesh file to the right parser: GLB via tinygltf, PLY via happly
+// (mesh), FBX/OBJ via assimp.
 static bool lowerExtIs(const std::string& path, const char* ext) {
     std::string e = std::filesystem::path(path).extension().string();
     std::transform(e.begin(), e.end(), e.begin(), [](unsigned char c){ return (char)std::tolower(c); });
@@ -354,9 +499,9 @@ static bool lowerExtIs(const std::string& path, const char* ext) {
 
 bool SceneManager::loadModel(const std::string& filePath, const std::string& parentFolder, int splitFactor) {
     std::vector<utils::Mesh> meshes;
-    const bool ok = lowerExtIs(filePath, ".glb")
-                    ? parseGltfFile(filePath, parentFolder, meshes)
-                    : parseMeshFileAssimp(filePath, meshes);
+    const bool ok = lowerExtIs(filePath, ".glb") ? parseGltfFile(filePath, parentFolder, meshes)
+                  : lowerExtIs(filePath, ".ply") ? parseMeshPly(filePath, meshes)
+                                                 : parseMeshFileAssimp(filePath, meshes);
     if (!ok) {
         std::cerr << "Failed to parse mesh file: " << filePath << std::endl;
         return false;
@@ -408,9 +553,9 @@ bool SceneManager::loadModelFolder(const std::string& folderPath, int splitFacto
     const std::string parentFolder = folderPath + "/";
     for (const auto& file : partFiles) {
         std::vector<utils::Mesh> partMeshes;
-        const bool ok = lowerExtIs(file.string(), ".glb")
-                        ? parseGltfFile(file.string(), parentFolder, partMeshes)
-                        : parseMeshFileAssimp(file.string(), partMeshes);
+        const bool ok = lowerExtIs(file.string(), ".glb") ? parseGltfFile(file.string(), parentFolder, partMeshes)
+                      : lowerExtIs(file.string(), ".ply") ? parseMeshPly(file.string(), partMeshes)
+                                                          : parseMeshFileAssimp(file.string(), partMeshes);
         if (!ok) {
             std::cerr << "  skipped (parse failed): " << file.filename().string() << std::endl;
             continue;
@@ -923,6 +1068,11 @@ void SceneManager::setupMeshBuffers(std::vector<utils::Mesh>& meshes)
                 vertices.push_back(face.scale.y);
                 vertices.push_back(face.scale.z);
 
+                // Vertex colour (white by default; real values for vertex-coloured PLY)
+                vertices.push_back(face.color[i].x);
+                vertices.push_back(face.color[i].y);
+                vertices.push_back(face.color[i].z);
+
                 minBB.x = std::min(minBB.x, face.pos[i].x);
                 minBB.y = std::min(minBB.y, face.pos[i].y);
                 minBB.z = std::min(minBB.z, face.pos[i].z);
@@ -941,10 +1091,10 @@ void SceneManager::setupMeshBuffers(std::vector<utils::Mesh>& meshes)
         renderContext.totalSurfaceArea += mesh.surfaceArea;
 
         
-        unsigned int floatsPerVertex = 17;
+        unsigned int floatsPerVertex = 20;
         glMesh.vertexCount = vertices.size() / floatsPerVertex; // Number of vertices
 
-        // 3 position, 3 normal, 4 tangent, 2 UV, 2 NORMALIZED UVs, 3 scale = 17
+        // 3 position, 3 normal, 4 tangent, 2 UV, 2 NORMALIZED UVs, 3 scale, 3 colour = 20
         size_t vertexStride = floatsPerVertex * sizeof(float);
 
         // Generate and bind VAO
@@ -975,6 +1125,9 @@ void SceneManager::setupMeshBuffers(std::vector<utils::Mesh>& meshes)
         // Scale attribute
         glVertexAttribPointer(5, 3, GL_FLOAT, GL_FALSE, vertexStride, (void*)(14 * sizeof(float)));
         glEnableVertexAttribArray(5);
+        // Vertex colour attribute
+        glVertexAttribPointer(6, 3, GL_FLOAT, GL_FALSE, vertexStride, (void*)(17 * sizeof(float)));
+        glEnableVertexAttribArray(6);
 
         //Should use array indices for per face data such as rotation and scale or directly compute it in the shader, should actually do it in a compute shader and be done
 

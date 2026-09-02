@@ -120,10 +120,66 @@ namespace nativeDialog
         return runDialog(true, title, {});
     }
 
+    // "Load project" -- open a .m2sproj (session state) file.
+    inline std::optional<std::string> openProjectFile()
+    {
+        std::vector<COMDLG_FILTERSPEC> filters = {
+            { L"Mesh2Splat project (*.m2sproj)", L"*.m2sproj" },
+            { L"All files (*.*)",                L"*.*"       },
+        };
+        return runDialog(false, L"Open project", filters);
+    }
+
+    // "Save project" -- native Save dialog (IFileSaveDialog). Appends .m2sproj,
+    // prompts on overwrite. Returns the chosen path, or nullopt on cancel.
+    inline std::optional<std::string> saveProjectFile(const std::wstring& defaultName)
+    {
+        std::optional<std::string> result;
+
+        HRESULT hrInit    = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+        bool    balanceIt = SUCCEEDED(hrInit);
+
+        IFileSaveDialog* dialog = nullptr;
+        if (SUCCEEDED(CoCreateInstance(CLSID_FileSaveDialog, nullptr, CLSCTX_ALL,
+                                       IID_IFileSaveDialog, reinterpret_cast<void**>(&dialog))))
+        {
+            DWORD options = 0;
+            dialog->GetOptions(&options);
+            options |= FOS_FORCEFILESYSTEM | FOS_OVERWRITEPROMPT;
+            dialog->SetOptions(options);
+            dialog->SetTitle(L"Save project");
+            COMDLG_FILTERSPEC filt[] = { { L"Mesh2Splat project (*.m2sproj)", L"*.m2sproj" } };
+            dialog->SetFileTypes(1, filt);
+            dialog->SetDefaultExtension(L"m2sproj");
+            if (!defaultName.empty()) dialog->SetFileName(defaultName.c_str());
+
+            if (SUCCEEDED(dialog->Show(GetActiveWindow())))
+            {
+                IShellItem* item = nullptr;
+                if (SUCCEEDED(dialog->GetResult(&item)))
+                {
+                    PWSTR path = nullptr;
+                    if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &path)))
+                    {
+                        result = wideToUtf8(path);
+                        CoTaskMemFree(path);
+                    }
+                    item->Release();
+                }
+            }
+            dialog->Release();
+        }
+
+        if (balanceIt) CoUninitialize();
+        return result;
+    }
+
 #else // non-Windows stubs
 
     inline std::optional<std::string> openModelFile()                 { return std::nullopt; }
     inline std::optional<std::string> pickFolder(const wchar_t*)      { return std::nullopt; }
+    inline std::optional<std::string> openProjectFile()               { return std::nullopt; }
+    inline std::optional<std::string> saveProjectFile(const std::wstring&) { return std::nullopt; }
 
 #endif
 }

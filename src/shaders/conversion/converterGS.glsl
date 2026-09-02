@@ -20,6 +20,7 @@ in VS_OUT{
     vec2 uv;
     vec2 normalizedUv;
     vec3 scale;
+    vec3 vertexColor;
 } gs_in[];
 
 out vec3 Position;
@@ -28,6 +29,7 @@ out vec2 UV;
 out vec4 Tangent;
 out vec3 Normal;
 flat out vec4 Quaternion;
+out vec3 VertexColor;
 
 //not sure why transpose does not work automatically, as it should: https://registry.khronos.org/OpenGL-Refpages/gl4/html/transpose.xhtml
 void transpose2x3(in mat2x3 m, out mat3x2 outputMat) {
@@ -431,10 +433,11 @@ void main() {
 
     for (int i = 0; i < 3; i++)
     {
-        Tangent                 = gs_in[i].tangent;       
+        Tangent                 = gs_in[i].tangent;
         Position                = gs_in[i].position;
         Normal                  = gs_in[i].normal;
         UV                      = gs_in[i].uv;
+        VertexColor             = gs_in[i].vertexColor;
         Quaternion              = quaternion;
         gl_Position             = vec4(orthogonalUvs[i] * 2.0 - 1.0, 0.0, 1.0);
         EmitVertex();

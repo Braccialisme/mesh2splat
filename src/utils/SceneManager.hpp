@@ -22,8 +22,12 @@ public:
     // The offline tiler then buckets all parts into the world quadtree.
     bool loadModelFolder(const std::string& folderPath, int splitFactor = 1,
                          const std::string& nameFilter = "");
-    // FBX / PLY / OBJ mesh import via assimp (RealityScan parts that aren't GLB).
+    // FBX / OBJ mesh import via assimp (RealityScan parts that aren't GLB/PLY).
     bool parseMeshFileAssimp(const std::string& path, std::vector<utils::Mesh>& meshes);
+    // Binary mesh PLY via happly directly (NO assimp) -- lets a 180M-face mesh
+    // load without assimp's transient memory blow-up. Same UDIM / diffuse-in-
+    // folder texturing as the assimp path.
+    bool parseMeshPly(const std::string& path, std::vector<utils::Mesh>& meshes);
     bool loadPly(const std::string& filePath);
     void exportPly(const std::string outputFile, unsigned int exportFormat);
 

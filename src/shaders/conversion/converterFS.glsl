@@ -38,9 +38,10 @@ in vec2 UV;
 in vec4 Tangent;
 in vec3 Normal;
 in vec4 Quaternion;
+in vec3 VertexColor;
 
 void main() {
-    
+
     uint index = atomicCounterIncrement(g_validCounter);
 
     // Bounds check: discard if we've exceeded the buffer capacity
@@ -56,7 +57,9 @@ void main() {
     }
     else
     {
-        out_Color = vec4(1);
+        // No texture: fall back to per-vertex colour (white by default, so
+        // textureless meshes without vertex colour stay white as before).
+        out_Color = vec4(VertexColor, 1.0);
     }
 
     //NORMAL MAP

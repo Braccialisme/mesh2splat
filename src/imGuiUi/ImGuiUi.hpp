@@ -72,6 +72,14 @@ public:
     void renderGpuFrametime();
     void renderLightingSettings();
     void renderLogWindow();
+
+    // --- Save / Load project: persist all paths + settings to a .m2sproj (JSON)
+    // so a crash mid-pipeline doesn't force re-picking a 20+ GB source and
+    // re-typing every slider. Load also re-imports the source (see mediator).
+    void saveProjectTo(const std::string& path);
+    void loadProjectFrom(const std::string& path);
+    bool shouldReimportProject() const { return projectReimportRequested; }
+    void clearReimportProject()        { projectReimportRequested = false; }
     float getLightIntensity() const;
     glm::vec3 getLightColor() const;
     
@@ -203,6 +211,7 @@ private:
     std::string meshFolderPath;            // folder of mesh parts (RealityScan) to import
     char  meshFolderFilter[64]   = "";     // only load files whose name contains this (pick one LOD)
     bool  loadFolderRequested    = false;  // set when the folder-import button is clicked
+    bool  projectReimportRequested = false; // set by loadProjectFrom; mediator re-imports the saved source
     bool  offlineUseCustomRoot   = false;  // shared site convention: user-provided quadtree root
     float offlineRootOrigin[2]   = { 0.0f, 0.0f };   // root min X / min Z (world units)
     float offlineRootSize        = 0.0f;   // requested root edge; snapped up to tileSize * 2^L

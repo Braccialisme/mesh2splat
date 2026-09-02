@@ -11,6 +11,91 @@ ready for Blender, web viewers, and 3D Tiles pipelines.
 
 ---
 
+## What our fork does vs original EA Mesh2Splat and LichtFeld Studio
+
+Three tools share one lineage. Upstream **EA Mesh2Splat** is the original
+mesh→3DGS converter. **LichtFeld Studio** (MrNeRF, GPL-3.0) forked the same
+converter *into a full CUDA/Vulkan training studio*. This fork (iconem) took it a
+different direction: a **standalone, deterministic converter built for massive
+photogrammetry → streamable tiles**.
+
+The conversion *math* is shared across all three — identical per-mesh bbox
+orthographic projection, `computeUv3DJacobian` Jacobian-derived scale, `SH_C0`
+colour encoding, and the same VS→GS→FS per-texel rasterisation. Everything
+*around* that core differs.
+
+**One-line positioning**
+- **EA**: the reference converter, live GPU only.
+- **LichtFeld**: mesh→splat is a *seed* you then **train** to photorealism
+  (view-dependent SH, learned opacity), inside a Vulkan+CUDA studio.
+- **This fork**: the mesh→splat bake **is the deliverable** — deterministic, no
+  training, streamed to disk at any scale, spatially tiled for the web.
+
+### Per-splat encoding
+
+| field | LichtFeld (training seed) | This fork |
+|---|---|---|
+| position | as-is | as-is (+ GNSS auto-recenter safety net) |
+| **normal** | dropped (standard 3DGS) | **`nx/ny/nz` kept** — real from GLB/normal-map, flat per-face on PLY |
+| colour → SH deg-0 (`f_dc`) | `(gamma(c)−0.5)/C0` (sRGB) | `(c−0.5)/C0` (linear) |
+| colour when no texture | **vertex colour** → white | white *(vertex-colour fallback: roadmap)* |
+| higher SH (`f_rest`) | none (degree 0) | 45 zeros (degree-3 padding) |
+| opacity | fixed ≈ 0.999 | per-texel texture alpha, finite-clamped |
+| scale / rotation | `log(scale)` / quaternion | `log(scale)` / quaternion |
+| PBR (metallic/roughness) | dropped | **optional, retained** |
+
+No fork computes real higher-order SH: a diffuse texture holds no view-dependent
+data, so the higher bands are zero. Real SH needs multi-view **training**
+(LichtFeld's optimise stage; we skip it by design — see *Known limits*).
+
+### Export & scale
+
+| | LichtFeld | This fork |
+|---|---|---|
+| PLY | schema scales with SH degree, + custom attributes, + provenance | Standard / PBR / Compressed (uint8 RGBA) + offline-streamed |
+| SOG (SuperSplat) | **native** | external `splat-transform` |
+| SPZ (Niantic) | **native** | — |
+| LOD | native RAD-LOD | **quadtree tiles + `manifest.json`** |
+| size ceiling | **VRAM-bound** (resident `SplatData`) | **disk-bound — 400M+**, streamed in batches |
+| web streaming | — | XZ quadtree tiling for region streaming |
+
+### Mesh input
+
+| | LichtFeld | This fork |
+|---|---|---|
+| formats | obj / fbx / gltf / glb / stl / dae / 3ds / **USD** (assimp + OpenMesh) | glb / fbx / obj / ply (tinygltf / assimp / **happly**) |
+| huge PLY (180M+) | assimp → `bad_alloc` | **happly path loads it** (assimp's overhead is the wall, not the geometry) |
+| UDIM | texture_loader | `.1001.` (Mari) + RealityScan **`_uN_vM_`** + diffuse-in-folder fallback |
+| folder-of-parts | — | ✅ RealityScan "save mesh by parts" |
+| mesh decimation | OpenMesh decimater | — |
+
+### Where each wins
+- **This fork**: scale (offline no-VRAM, 400M+), quadtree tiling for streaming,
+  RealityScan reality (huge PLY, UDIM naming, folder parts, GNSS recenter),
+  determinism, and **retained normals + PBR** for custom relighting.
+- **LichtFeld**: export breadth (native SOG / SPZ / LOD), a cleaner degree-0 seed,
+  vertex-colour + gamma colour handling, USD, mesh decimation, and the whole
+  **train-to-photoreal** stage.
+
+### Deliberate design choices
+- **We keep normals + PBR** where the others drop them. Standard 3DGS viewers
+  ignore these, but retaining them lets a **custom renderer (e.g. Babylon.js)
+  relight the splats dynamically** — the surface info survives in the PLY instead
+  of being baked away. (A downstream SOG conversion still strips them, so relight
+  needs a path that preserves the PLY fields.)
+- **Recenter is a safety net, not the main path.** The correct fix for
+  georeferenced data is a **local-coordinate export at the source** (with a stored
+  transform back to the georef origin). Auto-recenter only rescues a mesh already
+  shipped in global-CRS `float32`, where precision is already degraded.
+
+### On the roadmap (clean-room; do not copy GPL code)
+- **Vertex-colour fallback** — so a vertex-coloured mesh with **no textures** (e.g.
+  a 400M coloured tileset) bakes in real colour instead of white.
+- **Optional drop of the 45 `f_rest` zeros** — smaller files and no garbage
+  higher-SH artefacts in downstream tools.
+
+---
+
 ## The headline: offline conversion (no VRAM ceiling)
 
 Upstream is architected around live rendering — every gaussian stays resident in

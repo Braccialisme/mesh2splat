@@ -225,6 +225,15 @@ void GuiRendererConcreteMediator::update()
             notify(EventType::LoadModelFolder);
         }
 
+        // Load project -> re-import the saved source. Folder wins over single
+        // file wins over ply (same priority the UI uses when populating fields).
+        if (imguiUI.shouldReimportProject()) {
+            imguiUI.clearReimportProject();
+            if (!imguiUI.getMeshFolderPath().empty())      notify(EventType::LoadModelFolder);
+            else if (!imguiUI.getMeshFilePath().empty())   notify(EventType::LoadModel);
+            else if (!imguiUI.getPlyFilePath().empty())    notify(EventType::LoadPly);
+        }
+
         if (imguiUI.shouldLoadPly() && !imguiUI.getPlyFilePath().empty()) {
             notify(EventType::LoadPly);
         }

@@ -163,6 +163,11 @@ namespace utils
         glm::vec4 tangent[3];
         glm::vec3 scale;
         glm::vec4 rotation;
+        // Per-vertex colour (0..1). Defaults to white so meshes without vertex
+        // colours behave exactly as before (converter falls back to white). The
+        // PLY mesh path fills this from the file's red/green/blue so vertex-
+        // coloured meshes with NO textures bake in real colour instead of white.
+        glm::vec3 color[3] = { glm::vec3(1.0f), glm::vec3(1.0f), glm::vec3(1.0f) };
     };
 
     struct BBox

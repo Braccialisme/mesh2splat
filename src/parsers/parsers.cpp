@@ -5,6 +5,8 @@
 
 #include "parsers.hpp"
 #include "IncrementalPlyWriter.hpp"
+#include <fstream>
+#include <filesystem>
 
 // Step-1 verification switch: when 1, standard-format exports are written by
 // the new IncrementalPlyWriter AND by the legacy writer (to <output>.legacy.ply)
@@ -634,6 +636,52 @@ namespace parsers
             std::cerr << exc.what();
         }
         
+    }
+
+    bool plyIsGaussianSplat(const std::string& path)
+    {
+        // Read only the ascii header (up to end_header) and look for f_dc_0.
+        std::ifstream in(path, std::ios::binary);
+        if (!in) return false;
+        std::string line;
+        for (int i = 0; i < 2000 && std::getline(in, line); ++i) {
+            if (line.find("f_dc_0") != std::string::npos) return true;
+            if (line.find("end_header") != std::string::npos) break;
+        }
+        return false;
+    }
+
+    bool readMeshPlyGeometry(const std::string& path, MeshPlyRaw& out)
+    {
+        try {
+            happly::PLYData ply(path, false); // verbose off: this can be a multi-GB file
+
+            auto& v = ply.getElement("vertex");
+            out.x = v.getProperty<float>("x");
+            out.y = v.getProperty<float>("y");
+            out.z = v.getProperty<float>("z");
+
+            out.hasUV = v.hasProperty("s") && v.hasProperty("t");
+            if (out.hasUV) { out.s = v.getProperty<float>("s"); out.t = v.getProperty<float>("t"); }
+
+            out.hasColor = v.hasProperty("red") && v.hasProperty("green") && v.hasProperty("blue");
+            if (out.hasColor) {
+                // RealityScan stores colours as float 0..1; happly promotes uchar too.
+                out.r = v.getProperty<float>("red");
+                out.g = v.getProperty<float>("green");
+                out.b = v.getProperty<float>("blue");
+            }
+
+            out.faces = ply.getElement("face").getListProperty<int>("vertex_indices");
+
+            std::cout << "[ply-mesh] " << std::filesystem::path(path).filename().string() << ": "
+                      << out.x.size() << " verts, " << out.faces.size() << " faces, uv="
+                      << (out.hasUV ? "yes" : "no") << ", vcol=" << (out.hasColor ? "yes" : "no") << std::endl;
+            return !out.x.empty() && !out.faces.empty();
+        } catch (const std::exception& e) {
+            std::cerr << "[ply-mesh] read failed (" << path << "): " << e.what() << std::endl;
+            return false;
+        }
     }
 
     void savePlyVector(std::string outputFileLocation, std::vector<utils::GaussianDataSSBO> gaussians_3D_list, unsigned int FORMAT, float scaleMultiplier)
