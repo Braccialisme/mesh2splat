@@ -651,8 +651,47 @@ namespace parsers
         return false;
     }
 
+    // Pre-parse the ascii header for the vertex/face element counts (as int64, so
+    // a 32-bit-overflowed count shows up negative/huge). Returns false if not found.
+    static bool plyMeshHeaderCounts(const std::string& path, long long& nVert, long long& nFace)
+    {
+        nVert = nFace = -1;
+        std::ifstream in(path, std::ios::binary);
+        if (!in) return false;
+        std::string line; int guard = 0;
+        while (guard++ < 4000 && std::getline(in, line)) {
+            if (line.rfind("element vertex", 0) == 0) { try { nVert = std::stoll(line.substr(14)); } catch (...) {} }
+            else if (line.rfind("element face", 0) == 0) { try { nFace = std::stoll(line.substr(12)); } catch (...) {} }
+            if (line.find("end_header") != std::string::npos) break;
+        }
+        return nVert != -1 || nFace != -1;
+    }
+
     bool readMeshPlyGeometry(const std::string& path, MeshPlyRaw& out)
     {
+        // Guard: a corrupt (int32-overflowed) or simply too-large mesh must fail
+        // with a clear reason, not a happly "vector too long" throw or an OOM.
+        {
+            long long nV = -1, nF = -1;
+            plyMeshHeaderCounts(path, nV, nF);
+            const long long RAM_FACE_LIMIT = 220'000'000; // ~43 GB face-soup ceiling
+            if (nV < 0 || nF < 0) {
+                std::cerr << "[ply-mesh] header count is negative/overflowed (vertex=" << nV
+                          << ", face=" << nF << "). This PLY was written with a 32-bit count "
+                             "overflow (RealityScan on a >2.1B-element mesh). It cannot be loaded "
+                             "whole -- export it in PARTS and use the folder importer." << std::endl;
+                return false;
+            }
+            if (nF > RAM_FACE_LIMIT) {
+                std::cerr << "[ply-mesh] mesh too large to load whole: " << nF << " faces (~"
+                          << (nF * 196.0 / 1e9) << " GB face-soup, plus VRAM upload). The single-mesh "
+                             "path tops out near " << RAM_FACE_LIMIT << " faces. Export in PARTS "
+                             "(RealityScan 'save mesh by parts') and use the folder importer -- the "
+                             "offline tiler buckets all parts into one quadtree." << std::endl;
+                return false;
+            }
+        }
+
         try {
             happly::PLYData ply(path, false); // verbose off: this can be a multi-GB file
 
