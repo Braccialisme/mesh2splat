@@ -208,7 +208,10 @@ void ImGuiUI::renderFileSelectorWindow()
     if (!offlineRunning)
     {
         bool canRun = hasMeshBeenLoaded && !destinationFilePathFolder.empty();
-        if (!canRun) ImGui::BeginDisabled();
+        // NOTE: the settings below (resolution / PBR / tile size / custom root)
+        // are ALWAYS editable -- the sequential folder path needs Tile size and
+        // Custom root set WITHOUT any mesh loaded. Only the single-mesh "Convert
+        // to disk" button is gated on a loaded mesh (canRun), just above it.
         ImGui::SetNextItemWidth(140.0f);
         ImGui::Combo("Offline resolution", &offlineResolutionIndex, resolutionLabels, IM_ARRAYSIZE(resolutionLabels));
         {
@@ -241,6 +244,7 @@ void ImGuiUI::renderFileSelectorWindow()
                 ImGui::TextDisabled("Size snaps up to tile size x 2^L; fails if the mesh is outside the region.");
             }
         }
+        if (!canRun) ImGui::BeginDisabled();
         if (ImGui::Button("Convert to disk (offline)")) {
             offlineConvertRequested = true;
         }
