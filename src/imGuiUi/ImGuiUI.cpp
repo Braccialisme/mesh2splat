@@ -249,6 +249,26 @@ void ImGuiUI::renderFileSelectorWindow()
             ImGui::TextDisabled("Load a mesh and select an output folder first.");
         else
             ImGui::TextDisabled("Streams to disk in batches -- size limited by disk, not VRAM. Standard 3DGS PLY.");
+
+        // --- Sequential folder conversion: for a mesh too big to load whole,
+        // split to parts on disk (out-of-core splitter), then convert them one
+        // at a time into ONE shared tiled output. No mesh needs to be loaded.
+        ImGui::Separator();
+        {
+            bool seqReady = !destinationFilePathFolder.empty() && offlineTileSize > 0.0f && offlineUseCustomRoot;
+            if (!seqReady) ImGui::BeginDisabled();
+            if (ImGui::Button("Convert folder of parts (sequential offline)")) {
+                if (auto folder = nativeDialog::pickFolder(L"Choose folder of mesh PARTS to convert sequentially")) {
+                    meshFolderPath = *folder;
+                    sequentialFolderConvertRequested = true;
+                }
+            }
+            if (!seqReady) ImGui::EndDisabled();
+            ImGui::TextDisabled("Huge mesh? Split to parts (out-of-core), then convert them one-by-one\n"
+                                "into the shared tiled output. Needs: output folder + Tile size > 0 +\n"
+                                "Custom root region covering the whole model (from the splitter's bbox).");
+        }
+
         if (!offlineStatus.empty())
             ImGui::Text("%s", offlineStatus.c_str());  // persists Done / Failed / Cancelled
     }

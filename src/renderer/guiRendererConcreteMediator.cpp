@@ -252,30 +252,45 @@ void GuiRendererConcreteMediator::update()
 
         // --- Offline (chunked-to-disk) conversion: start on request, then
         // drive exactly one batch per frame so the window keeps pumping.
+        auto rootFromUi = [&]() {
+            OfflineConverter::RootRegion r;
+            r.enabled = imguiUI.getOfflineUseCustomRoot();
+            r.minX = imguiUI.getOfflineRootMinX(); r.minZ = imguiUI.getOfflineRootMinZ();
+            r.size = imguiUI.getOfflineRootSize();
+            return r;
+        };
+        if (imguiUI.shouldStartSequentialFolder()) {
+            imguiUI.clearSequentialFolderRequest();
+            renderer.startSequentialFolderConversion(imguiUI.getMeshFolderPath(),
+                                                     imguiUI.getMeshFullFilePathDestination(),
+                                                     imguiUI.getOfflineTileSize(), rootFromUi(),
+                                                     imguiUI.getOfflineResolutionTarget(),
+                                                     imguiUI.getOfflineIncludePbr());
+        }
         if (imguiUI.shouldStartOfflineConversion()) {
             imguiUI.clearOfflineConvertRequest();
-            OfflineConverter::RootRegion rootRegion;
-            rootRegion.enabled = imguiUI.getOfflineUseCustomRoot();
-            rootRegion.minX    = imguiUI.getOfflineRootMinX();
-            rootRegion.minZ    = imguiUI.getOfflineRootMinZ();
-            rootRegion.size    = imguiUI.getOfflineRootSize();
             renderer.startOfflineConversion(imguiUI.getMeshFullFilePathDestination(), imguiUI.getOfflineTileSize(),
-                                            rootRegion, imguiUI.getOfflineResolutionTarget(),
+                                            rootFromUi(), imguiUI.getOfflineResolutionTarget(),
                                             imguiUI.getOfflineIncludePbr());
         }
-        if (renderer.isOfflineConversionRunning()) {
-            if (imguiUI.wantsOfflineCancel()) {
-                imguiUI.clearOfflineCancelRequest();
-                renderer.cancelOfflineConversion();
-            } else {
-                renderer.stepOfflineConversion();
-            }
+        // Drive whichever conversion is active (sequential is a multi-part offline
+        // session, so it takes precedence over the plain per-batch step).
+        if (renderer.isSequentialRunning()) {
+            if (imguiUI.wantsOfflineCancel()) { imguiUI.clearOfflineCancelRequest(); renderer.cancelSequentialFolderConversion(); }
+            else                              { renderer.stepSequentialFolderConversion(); }
+            imguiUI.setOfflineState(renderer.isSequentialRunning(), renderer.getSequentialProgress(),
+                                    renderer.getOfflineWritten(), renderer.getSequentialStatus());
         }
-        imguiUI.setOfflineState(
-            renderer.isOfflineConversionRunning(),
-            renderer.getOfflineProgress(),
-            renderer.getOfflineWritten(),
-            renderer.getOfflineStatus());
+        else if (renderer.isOfflineConversionRunning()) {
+            if (imguiUI.wantsOfflineCancel()) { imguiUI.clearOfflineCancelRequest(); renderer.cancelOfflineConversion(); }
+            else                              { renderer.stepOfflineConversion(); }
+            imguiUI.setOfflineState(renderer.isOfflineConversionRunning(), renderer.getOfflineProgress(),
+                                    renderer.getOfflineWritten(), renderer.getOfflineStatus());
+        }
+        else {
+            imguiUI.setOfflineState(false, renderer.getOfflineProgress(),
+                                    renderer.getOfflineWritten(), renderer.getOfflineStatus());
+        }
         imguiUI.setLoadedMeshCount(renderer.getMeshCount());
 
         notify(EventType::UpdateTransforms);

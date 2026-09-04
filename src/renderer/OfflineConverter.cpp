@@ -169,6 +169,94 @@ bool OfflineConverter::start(RenderContext& ctx,
     return true;
 }
 
+bool OfflineConverter::beginMultiPart(RenderContext& ctx,
+                                      const std::string& outputPath,
+                                      float requestedTileSize,
+                                      const RootRegion& rootRegion,
+                                      int requestedResolution,
+                                      unsigned int requestedBatchCapacity,
+                                      bool includePbr)
+{
+    if (running) return false;
+    if (outputPath.empty())    { status = "No output path.";                       return false; }
+    if (requestedTileSize <= 0.0f) { status = "Sequential folder mode needs a tile size > 0."; return false; }
+    if (!rootRegion.enabled)   { status = "Sequential folder mode needs a custom root region (shared across parts)."; return false; }
+    if (rootRegion.size < requestedTileSize) { status = "Custom root region size must be at least the tile size."; return false; }
+
+    batchCapacity     = std::max(requestedBatchCapacity, 1000u);
+    tileSize          = requestedTileSize;
+    tiled             = true;
+    totalVertices     = 0;
+    processedVertices = 0;
+    totalWritten      = 0;
+    batchesDone       = 0;
+    work.clear();
+    tiles.clear();
+    outputPathStored  = outputPath;
+    includePbrStored  = includePbr;
+
+    resolutionStored      = (requestedResolution > 0) ? requestedResolution : ctx.resolutionTarget;
+    scaleMultiplierStored = ctx.gaussianStd / static_cast<float>(resolutionStored);
+
+    // Custom root only (parts must share one quadtree). Snap size up to tileSize*2^L.
+    rootFromUser = true;
+    rootMinX  = rootRegion.minX;
+    rootMinZ  = rootRegion.minZ;
+    leafLevel = 0;
+    rootSize  = tileSize;
+    while (rootSize * (1.0f + 1e-5f) < rootRegion.size && leafLevel < 24) { rootSize *= 2.0f; ++leafLevel; }
+
+    std::filesystem::path p(outputPath);
+    sourceName = p.stem().string();
+    std::filesystem::path dir = p.parent_path() / (p.stem().string() + "_tiles");
+    std::error_code ec;
+    std::filesystem::create_directories(dir, ec);
+    if (ec) { status = "Could not create tile folder: " + dir.string(); return false; }
+    tilesDir = dir.string();
+
+    size_t swept = 0;   // clear any stale tiles from a previous run
+    for (auto& entry : std::filesystem::directory_iterator(dir, ec)) {
+        if (!entry.is_regular_file()) continue;
+        const std::string fn = entry.path().filename().string();
+        const bool isTile = fn.rfind("tile_", 0) == 0 && entry.path().extension() == ".ply";
+        if (isTile || fn == "manifest.json") {
+            std::error_code rmEc;
+            if (std::filesystem::remove(entry.path(), rmEc)) ++swept;
+        }
+    }
+    if (swept > 0) std::cout << "[Offline] Swept " << swept << " stale file(s) in " << tilesDir << std::endl;
+
+    glGenBuffers(1, &offlineGaussianBuffer);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, offlineGaussianBuffer);
+    GLsizeiptr bufferSize = static_cast<GLsizeiptr>(batchCapacity) * sizeof(utils::GaussianDataSSBO);
+    glBufferData(GL_SHADER_STORAGE_BUFFER, bufferSize, nullptr, GL_DYNAMIC_DRAW);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+
+    running   = true;
+    multiPart = true;
+    status    = "Sequential folder conversion started...";
+    std::cout << "[Offline] Multi-part session -> " << tilesDir << "  (tile " << tileSize
+              << ", root " << rootMinX << "," << rootMinZ << " size " << rootSize
+              << " L" << leafLevel << ", resolution " << resolutionStored << ")" << std::endl;
+    return true;
+}
+
+void OfflineConverter::queuePart(RenderContext& ctx)
+{
+    for (size_t i = 0; i < ctx.dataMeshAndGlMesh.size(); ++i) {
+        GLsizei vertexCount = static_cast<GLsizei>(ctx.dataMeshAndGlMesh[i].second.vertexCount);
+        if (vertexCount <= 0) continue;
+        work.push_back({ i, 0, vertexCount });
+        totalVertices += static_cast<uint64_t>(vertexCount);
+    }
+}
+
+bool OfflineConverter::finishMultiPart()
+{
+    multiPart = false;                 // let finishAndWriteManifest close writers + manifest
+    return finishAndWriteManifest();
+}
+
 OfflineConverter::TileState* OfflineConverter::tileFor(int i, int j)
 {
     auto key = std::make_pair(i, j);
@@ -196,6 +284,10 @@ bool OfflineConverter::step(RenderContext& ctx)
     if (!running) return false;
 
     if (work.empty()) {
+        // Multi-part session: this part is drained -- idle (keep tiles open),
+        // the driver loads the next part and calls queuePart(). Finalisation
+        // happens once, in finishMultiPart().
+        if (multiPart) return false;
         finishAndWriteManifest(); // sets final status; run ends either way
         return false;
     }

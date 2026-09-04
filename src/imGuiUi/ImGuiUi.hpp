@@ -112,6 +112,8 @@ public:
     float getOfflineRootSize() const          { return offlineRootSize; }
     bool shouldStartOfflineConversion() const { return offlineConvertRequested; }
     void clearOfflineConvertRequest()         { offlineConvertRequested = false; }
+    bool shouldStartSequentialFolder() const  { return sequentialFolderConvertRequested; }
+    void clearSequentialFolderRequest()       { sequentialFolderConvertRequested = false; }
     bool wantsOfflineCancel() const           { return offlineCancelRequested; }
     void clearOfflineCancelRequest()          { offlineCancelRequested = false; }
     void setOfflineState(bool running, float progress01, unsigned long long written, const std::string& statusText)
@@ -216,6 +218,7 @@ private:
     float offlineRootOrigin[2]   = { 0.0f, 0.0f };   // root min X / min Z (world units)
     float offlineRootSize        = 0.0f;   // requested root edge; snapped up to tileSize * 2^L
     bool offlineConvertRequested = false;
+    bool sequentialFolderConvertRequested = false; // convert a folder of parts sequentially (huge split mesh)
     bool offlineCancelRequested  = false;
     bool offlineRunning          = false;
     float offlineProgress        = 0.0f;

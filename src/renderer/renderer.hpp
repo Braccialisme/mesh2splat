@@ -4,6 +4,9 @@
 ///////////////////////////////////////////////////////////////////////////////
 
 #pragma once
+#include <filesystem>
+#include <algorithm>
+#include <iostream>
 #include "utils/utils.hpp"
 #include "IoHandler.hpp"
 #include "imGuiUi/ImGuiUi.hpp"
@@ -79,6 +82,59 @@ public:
 	unsigned long long getOfflineWritten() const { return offlineConverter.writtenCount(); }
 	const std::string& getOfflineStatus() const { return offlineConverter.statusText(); }
 
+	// --- Sequential folder conversion: convert a folder of mesh parts (from the
+	// out-of-core splitter) into ONE shared tiled output, loading/converting/
+	// freeing one part at a time so a mesh too big to hold whole still LODs.
+	// Requires a custom root region (shared quadtree across all parts).
+	bool startSequentialFolderConversion(const std::string& folder, const std::string& outputPath,
+	                                     float tileSize, const OfflineConverter::RootRegion& rootRegion,
+	                                     int offlineResolution, bool includePbr) {
+		namespace fs = std::filesystem;
+		seqParts.clear(); seqIndex = 0; seqParentFolder = folder + "/";
+		std::error_code ec;
+		if (!fs::is_directory(folder, ec)) { seqStatus = "Not a folder: " + folder; return false; }
+		for (const auto& e : fs::directory_iterator(folder, ec)) {
+			if (!e.is_regular_file()) continue;
+			std::string ext = e.path().extension().string();
+			std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c){ return (char)std::tolower(c); });
+			if (ext == ".ply") seqParts.push_back(e.path().string());
+		}
+		std::sort(seqParts.begin(), seqParts.end());
+		if (seqParts.empty()) { seqStatus = "No .ply parts in " + folder; return false; }
+		if (!offlineConverter.beginMultiPart(renderContext, outputPath, tileSize, rootRegion,
+		                                     offlineResolution, OfflineConverter::kDefaultBatchCapacity, includePbr))
+			{ seqStatus = offlineConverter.statusText(); return false; }
+		if (!sceneManager->loadModel(seqParts[0], seqParentFolder, 1)) {
+			seqStatus = "Failed to load part: " + seqParts[0]; offlineConverter.cancel(); return false;
+		}
+		offlineConverter.queuePart(renderContext);
+		seqRunning = true;
+		seqStatus = "Converting part 1/" + std::to_string(seqParts.size());
+		std::cout << "[Offline] Sequential folder: " << seqParts.size() << " parts from " << folder << std::endl;
+		return true;
+	}
+	void stepSequentialFolderConversion() {
+		if (!seqRunning) return;
+		if (offlineConverter.step(renderContext)) return;   // batch done, part still has work
+		if (!offlineConverter.isRunning()) { seqRunning = false; seqStatus = offlineConverter.statusText(); return; } // failed
+		++seqIndex;                                          // current part drained -> next
+		if (seqIndex >= seqParts.size()) {
+			offlineConverter.finishMultiPart();
+			seqRunning = false;
+			seqStatus = offlineConverter.statusText();
+			return;
+		}
+		if (sceneManager->loadModel(seqParts[seqIndex], seqParentFolder, 1))
+			offlineConverter.queuePart(renderContext);
+		else
+			std::cerr << "[Offline] skipping unloadable part: " << seqParts[seqIndex] << std::endl;
+		seqStatus = "Converting part " + std::to_string(seqIndex + 1) + "/" + std::to_string(seqParts.size());
+	}
+	void cancelSequentialFolderConversion()  { offlineConverter.cancel(); seqRunning = false; seqStatus = "Cancelled."; }
+	bool  isSequentialRunning() const        { return seqRunning; }
+	float getSequentialProgress() const      { return seqParts.empty() ? 0.0f : (float)seqIndex / (float)seqParts.size(); }
+	const std::string& getSequentialStatus() const { return seqStatus; }
+
 
 
 
@@ -92,6 +148,13 @@ private:
 	RenderContext renderContext;
 
 	OfflineConverter offlineConverter;
+
+	// Sequential folder (multi-part) conversion state
+	std::vector<std::string> seqParts;
+	size_t                   seqIndex = 0;
+	std::string              seqParentFolder;
+	std::string              seqStatus;
+	bool                     seqRunning = false;
 
 	double lastShaderCheckTime;
 

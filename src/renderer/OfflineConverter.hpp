@@ -87,6 +87,23 @@ public:
     // Returns true while more work remains; false when finished or failed.
     bool step(RenderContext& ctx);
 
+    // --- Multi-part (sequential folder) conversion --------------------------
+    // Convert MANY part meshes into ONE shared tiled output, loading / converting
+    // / freeing one part at a time -- so a mesh too big to hold whole (billions of
+    // faces, split to parts on disk by the out-of-core splitter) can still be
+    // LOD'd. REQUIRES a custom root region so every part tiles into the same
+    // quadtree. Driver (in Renderer): beginMultiPart() once; then per part, load
+    // it into ctx, queuePart(ctx), and pump step() until it returns false (that
+    // part drained -- NOT finalized while multiPart); load the next part.
+    // finishMultiPart() after the last part writes the manifest.
+    bool beginMultiPart(RenderContext& ctx, const std::string& outputPath,
+                        float tileSize, const RootRegion& rootRegion,
+                        int resolutionTarget, unsigned int batchCapacity, bool includePbr);
+    void queuePart(RenderContext& ctx);   // append work ranges for the loaded meshes
+    bool finishMultiPart();               // finalize tiles + manifest
+    bool hasWork() const { return !work.empty(); }
+    bool isMultiPart() const { return multiPart; }
+
     // Cancels the run: deletes partial output file(s), frees GPU buffer.
     void cancel();
 
@@ -149,5 +166,6 @@ private:
     uint64_t     totalWritten          = 0;
     int          batchesDone           = 0;
     bool         running               = false;
+    bool         multiPart             = false;  // sequential folder session: step() idles (no finalize) when work empties
     std::string  status;
 };

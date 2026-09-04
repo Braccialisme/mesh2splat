@@ -179,6 +179,37 @@ moderate counts; hundreds of parts with big/UDIM textures can exceed VRAM
 
 ---
 
+## Huge meshes that can't be loaded whole (out-of-core split + sequential convert)
+
+Some RealityScan exports are simply too big to hold in RAM or VRAM at once — a
+single mesh of **billions** of faces (and RealityScan even overflows its own
+32-bit vertex/face counters in the PLY header past ~2.1 B elements). The load-
+everything path can't touch these: e.g. 4.67 B faces ≈ 900 GB of expanded
+face-soup. Two pieces handle them:
+
+**1. Out-of-core splitter — `tools/ooc_split_mesh.py`.** Streams the giant mesh
+PLY from disk (recovering the true counts from file size when the header
+counters have overflowed), loads only the vertex block into RAM, buckets the
+faces into a ground-plane grid, and writes a folder of small, recentred,
+vertex-coloured **part PLYs** — never holding the whole mesh.
+
+```
+python tools/ooc_split_mesh.py huge.ply --plan            # counts + grid plan (seconds)
+python tools/ooc_split_mesh.py huge.ply out_parts --budget 40   # ~40 M faces/part
+```
+It prints the recenter **origin** (add it back to georeference) and the local
+**bbox** — you'll use that bbox as the custom root below.
+
+**2. Sequential per-part conversion (in-app).** In the *Offline conversion*
+panel, set **Tile size > 0**, enable **Custom root region** covering the model
+(origin X/Z ≈ 0, size ≥ the local X/Z span the splitter reported), pick the
+output folder, then **"Convert folder of parts (sequential offline)"** and point
+it at the parts folder. It loads one part → converts it into the **shared** tiled
+output → frees it → next, so VRAM/RAM only ever holds one part. All parts share
+one quadtree (that's why the custom root is required), and the manifest is written
+once at the end. No single mesh is ever resident, so the mesh size ceiling
+becomes disk, not memory — on either side of the pipeline.
+
 ## Fixes over upstream
 
 - **Portable shader loading.** Shaders load relative to the exe (upstream baked
