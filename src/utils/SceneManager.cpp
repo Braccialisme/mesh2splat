@@ -1018,6 +1018,17 @@ void SceneManager::generateNormalizedUvCoordinates(std::vector<utils::Mesh>& mes
 // Setup Mesh Buffers
 void SceneManager::setupMeshBuffers(std::vector<utils::Mesh>& meshes)
 {
+    // Free the PREVIOUS model's GPU objects before dropping their handles --
+    // otherwise every reload leaks its VAO/VBO (and textures). Fatal for the
+    // sequential folder path, where hundreds of ~10 GB parts load in turn and
+    // would exhaust VRAM within a few parts and crash.
+    for (auto& pair : renderContext.dataMeshAndGlMesh) {
+        if (pair.second.vao) glDeleteVertexArrays(1, &pair.second.vao);
+        if (pair.second.vbo) glDeleteBuffers(1, &pair.second.vbo);
+    }
+    for (auto& meshTex : renderContext.meshToTextureData)
+        for (auto& tex : meshTex.second)
+            if (tex.second.glTextureID) { GLuint id = tex.second.glTextureID; glDeleteTextures(1, &id); }
 
     renderContext.dataMeshAndGlMesh.clear();
     renderContext.dataMeshAndGlMesh.reserve(meshes.size());

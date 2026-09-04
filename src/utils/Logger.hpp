@@ -19,6 +19,8 @@
 #include <string>
 #include <mutex>
 #include <iostream>
+#include <fstream>
+#include <filesystem>
 
 namespace utils
 {
@@ -27,6 +29,7 @@ namespace utils
     public:
         std::string      text;
         std::streambuf*  orig = nullptr;
+        std::ofstream    file;                        // persistent log, flushed per write
         std::mutex       mtx;
         static constexpr size_t kCap = 256 * 1024;   // keep last ~256 KB
 
@@ -38,6 +41,7 @@ namespace utils
                     std::lock_guard<std::mutex> lk(mtx);
                     text.push_back(static_cast<char>(c));
                     trim();
+                    if (file.is_open()) { file.put(static_cast<char>(c)); file.flush(); }
                 }
                 if (orig) orig->sputc(static_cast<char>(c));
             }
@@ -49,6 +53,7 @@ namespace utils
                 std::lock_guard<std::mutex> lk(mtx);
                 text.append(s, static_cast<size_t>(n));
                 trim();
+                if (file.is_open()) { file.write(s, n); file.flush(); }  // survives a crash
             }
             if (orig) orig->sputn(s, n);
             return n;
@@ -75,6 +80,12 @@ namespace utils
     {
         gLog().orig = std::cout.rdbuf(&gLog());
         std::cerr.rdbuf(&gLog());
+        // Persistent log next to the exe (or CWD), flushed every line, so a crash
+        // still leaves the trace on disk. Path is printed so it's easy to find.
+        std::error_code ec;
+        std::filesystem::path p = std::filesystem::absolute("mesh2splat_session.log", ec);
+        gLog().file.open(p.string(), std::ios::out | std::ios::trunc);
+        std::cout << "[log] session log -> " << p.string() << std::endl;
     }
 
     inline std::string logText()
