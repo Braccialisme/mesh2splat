@@ -425,6 +425,16 @@ void main() {
     float gaussian_scale_x = length(Ju);
     float gaussian_scale_y = length(Jv);
 
+    // Degenerate-triangle guard. A well-conditioned splat has |dP/du| = the bbox
+    // range (the orthogonal UV spans [0,1] over that range), so the stored scale
+    // = range * scaleMultiplier = one grid cell. But sub-precision tiny triangles
+    // (e.g. a 4B-face mesh) make the UV matrix singular -> inverse2x2 returns 0 ->
+    // scale 0 -> INVISIBLE splats. Floor the scale to the range so such splats
+    // still get the correct cell size. No effect on well-formed triangles.
+    float bboxRange = max(max(bboxSize.x, bboxSize.y), bboxSize.z);
+    gaussian_scale_x = max(gaussian_scale_x, bboxRange);
+    gaussian_scale_y = max(gaussian_scale_y, bboxRange);
+
     float packed_s_x    = gaussian_scale_x;
     float packed_s_y    = gaussian_scale_y;
     float packed_s_z    = 1e-7;
