@@ -49,6 +49,11 @@ static int runCli(int argc, char** argv) {
     renderer.initialize();
     renderer.setStdDevFromImGui(gstd);   // sets renderContext.gaussianStd (scaleMult = std/grid)
 
+    if (std::strcmp(argVal(argc, argv, "--up", ""), "z") == 0) {
+        renderer.getSceneManager().setSwapYZ(true);   // Z-up mesh -> Y-up (ground-plane tiling)
+        std::cout << "[CLI] --up z: swapping Z-up -> Y-up on load\n";
+    }
+
     // Flush any benign GL errors accumulated during setup, so the converter's
     // own glGetError check isn't tripped by them, then report anything left.
     { GLenum e; int flushed = 0; while ((e = glGetError()) != GL_NO_ERROR) { ++flushed;

@@ -386,6 +386,16 @@ bool SceneManager::parseMeshPly(const std::string& path, std::vector<utils::Mesh
         std::cerr << "[ply-mesh] no usable geometry in " << path << std::endl;
         return false;
     }
+    // Z-up -> Y-up: (x, y, z) -> (x, z, -y). Done on the raw arrays so recenter,
+    // bbox, faces and the tiler all see Y-up (ground-plane tiling + Y-up output).
+    if (swapYZ) {
+        std::vector<float> newY = raw.z;
+        std::vector<float> newZ = raw.y;
+        for (auto& v : newZ) v = -v;
+        raw.y.swap(newY);
+        raw.z.swap(newZ);
+    }
+
     const size_t nV = raw.x.size();
     const size_t nF = raw.faces.size();
 

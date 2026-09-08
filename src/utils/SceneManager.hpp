@@ -28,6 +28,12 @@ public:
     // load without assimp's transient memory blow-up. Same UDIM / diffuse-in-
     // folder texturing as the assimp path.
     bool parseMeshPly(const std::string& path, std::vector<utils::Mesh>& meshes);
+
+    // Z-up (RealityScan/GNSS) -> Y-up swap at load: (x,y,z) -> (x, z, -y). Makes
+    // the quadtree tiler (which buckets by X-Z) tile the GROUND plane instead of
+    // elevation slabs, and the output splats Y-up (viewer-native). Set for the
+    // whole load (single mesh, folder, or sequential parts).
+    void setSwapYZ(bool b) { swapYZ = b; }
     bool loadPly(const std::string& filePath);
     void exportPly(const std::string outputFile, unsigned int exportFormat);
 
@@ -36,6 +42,7 @@ public:
 
 private:
     RenderContext& renderContext;
+    bool swapYZ = false;   // Z-up -> Y-up at load (see setSwapYZ)
 
     bool parseGltfFile(const std::string& filePath, const std::string& parentFolder, std::vector<utils::Mesh>& meshes);
     void parseGltfMaterial(const tinygltf::Model& model, int materialIndex, std::string base_folder, utils::MaterialGltf& materialGltf);
